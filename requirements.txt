@@ -20,3 +20,5 @@ google-cloud-bigquery
 pytz
 xlrd>=2.0.1
 fiona
+sqlalchemy
+psycopg2-binary

@@ -14,6 +14,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 import fiona
+from sqlalchemy import create_engine
 
 # ==========================================
 # CONFIGURACIÓN Y UTILIDADES DE GOOGLE (DRIVE & BIGQUERY)
@@ -113,6 +114,23 @@ def upload_to_bigquery(df, project_id, dataset_id, table_id):
         print("✅ Carga a BigQuery exitosa.")
     except Exception as e:
         print(f"❌ Error subiendo a BigQuery: {e}")
+
+def upload_to_neon(df, table_name):
+    """Sube el DataFrame a Neon PostgreSQL reemplazando la tabla existente."""
+    print(f"⬆️ Iniciando carga a Neon PostgreSQL: tabla '{table_name}'...")
+    
+    # Connection string provided by user
+    conn_str = "postgresql://neondb_owner:npg_p4BlTfD7XoCW@ep-aged-dust-a878yls8-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
+    
+    try:
+        engine = create_engine(conn_str)
+        # index=False para no subir el índice de pandas como columna
+        df.to_sql(table_name, engine, if_exists='replace', index=False)
+        print("✅ Carga a Neon PostgreSQL exitosa.")
+    except Exception as e:
+        print(f"❌ Error subiendo a Neon: {e}")
+        # Re-raise para que el proceso falle visiblemente si no se puede guardar
+        raise e
 
 # ==========================================
 # FUNCIONES DE LIMPIEZA (TU LÓGICA)
@@ -330,39 +348,9 @@ def procesar_datos(excel_content_bytes, folder_id):
     del resultado_palermo, gdf_palermo_norte
     gc.collect()
     
-    # PASO 2: Anillo Digital C2 (Comuna 2.5) - SEGUNDO
-    print("📍 PASO 2: Clasificando puntos dentro de Anillo Digital C2...")
-    ruta_anillo_c2 = os.path.join(os.path.dirname(__file__), 'assets', 'comunas', 'anillo_digital_c2.kmz')
-    
-    if os.path.exists(ruta_anillo_c2):
-        with zipfile.ZipFile(ruta_anillo_c2, 'r') as kmz:
-            kml_files = [f for f in kmz.namelist() if f.endswith('.kml')]
-            if kml_files:
-                with kmz.open(kml_files[0]) as kml_file:
-                    gdf_anillo_c2 = gpd.read_file(kml_file)
-                
-                # Asegurar mismo CRS
-                if puntos_gdf.crs != gdf_anillo_c2.crs:
-                    gdf_anillo_c2 = gdf_anillo_c2.to_crs(puntos_gdf.crs)
-                
-                # Spatial Join
-                resultado_anillo = gpd.sjoin(puntos_gdf, gdf_anillo_c2[['geometry']], how="left", predicate="within")
-                mask_anillo = resultado_anillo['index_right'].notna()
-                
-                # Asignar 2.5 (código para Anillo Digital C2)
-                df_actualizado.loc[mask_anillo, 'comuna_calculada'] = 2.5
-                print(f"✅ Puntos clasificados como Anillo Digital C2 (2.5): {mask_anillo.sum()}")
-                
-                del resultado_anillo, gdf_anillo_c2
-    else:
-        print(f"⚠️ Archivo {ruta_anillo_c2} no encontrado - se omite Anillo Digital C2")
-        mask_anillo = pd.Series([False] * len(df_actualizado))
-    
-    gc.collect()
-    
-    # PASO 3: CLASIFICACIÓN DE COMUNAS (SHP) - TERCERO
+    # PASO 2: CLASIFICACIÓN DE COMUNAS (SHP) - SEGUNDO
     # IMPORTANTE: Solo clasificar puntos que AÚN NO tienen comuna asignada
-    print("📍 PASO 3: Ejecutando cruce espacial con comunas para puntos sin clasificar...")
+    print("📍 PASO 2: Ejecutando cruce espacial con comunas para puntos sin clasificar...")
     
     # Ruta dinámica al shapefile (assets dentro del src)
     ruta_shp = os.path.join(os.path.dirname(__file__), 'assets', 'comunas', 'comunas.shp')
@@ -377,7 +365,7 @@ def procesar_datos(excel_content_bytes, folder_id):
         gdf_comunas = gdf_comunas.to_crs(puntos_gdf.crs)
 
     # CRÍTICO: Solo procesar puntos donde comuna_calculada es None
-    # Esto preserva las clasificaciones de Palermo Norte (14.5) y Anillo Digital (2.5)
+    # Esto preserva la clasificación de Palermo Norte (14.5)
     mask_sin_clasificar = df_actualizado['comuna_calculada'].isna()
     puntos_sin_clasificar_gdf = puntos_gdf[mask_sin_clasificar].copy()
     
@@ -397,10 +385,9 @@ def procesar_datos(excel_content_bytes, folder_id):
     # Verificar distribución final
     print(f"✅ Distribución final de comuna_calculada:")
     print(f"   - Palermo Norte (14.5): {(df_actualizado['comuna_calculada'] == 14.5).sum()}")
-    print(f"   - Anillo Digital C2 (2.5): {(df_actualizado['comuna_calculada'] == 2.5).sum()}")
     print(f"   - Comunas regulares: {df_actualizado['comuna_calculada'].between(1, 15, inclusive='both').sum()}")
     
-    # comuna_calculada queda como float (comunas 1.0-15.0, zonas especiales: 2.5, 14.5)
+    # comuna_calculada queda como float (comunas 1.0-15.0, zona especial: 14.5)
     
     del puntos_gdf, puntos_sin_clasificar_gdf, gdf_comunas
     gc.collect()
@@ -533,12 +520,15 @@ def procesar_datos(excel_content_bytes, folder_id):
     # 1. Subida original a Drive (Mantenemos tu lógica existente)
     upload_df_as_parquet(service, df_actualizado, nombre_limpio, folder_id)
     
-    # 2. Subida a BigQuery
-    PROJECT_ID = 'autom-bap-personas'   # Tu ID de proyecto
-    DATASET_ID = 'tablero_operativo'    # Tu Dataset
-    TABLE_ID = 'historico_limpio'       # Tu Tabla
+    # 2. Subida a Neon PostgreSQL (Reemplaza a BigQuery)
+    # PROJECT_ID = 'autom-bap-personas'   # Tu ID de proyecto
+    # DATASET_ID = 'tablero_operativo'    # Tu Dataset
+    # TABLE_ID = 'historico_limpio'       # Tu Tabla
     
-    upload_to_bigquery(df_actualizado, PROJECT_ID, DATASET_ID, TABLE_ID)
+    # upload_to_bigquery(df_actualizado, PROJECT_ID, DATASET_ID, TABLE_ID)
+    
+    TABLE_NAME = 'historico_limpio'
+    upload_to_neon(df_actualizado, TABLE_NAME)
     
     print(f"🎉 Proceso Terminado. Limpio actualizado al día {df_actualizado[col_fecha].max()}")
     
