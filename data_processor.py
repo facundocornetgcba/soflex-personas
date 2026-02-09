@@ -120,7 +120,7 @@ def upload_to_neon(df, table_name):
     print(f"⬆️ Iniciando carga a Neon PostgreSQL: tabla '{table_name}'...")
     
     # Connection string provided by user
-    conn_str = "postgresql://neondb_owner:npg_p4BlTfD7XoCW@ep-aged-dust-a878yls8-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
+    conn_str = "postgresql://neondb_owner:npg_3X7LoQzdmWhH@ep-square-paper-a89hpeb2-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
     
     try:
         engine = create_engine(conn_str)
