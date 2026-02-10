@@ -108,8 +108,8 @@ def get_table_stats(table_name):
         query = f"""
         SELECT 
             COUNT(*) as total_records,
-            MIN(fecha_inicio) as min_fecha,
-            MAX(fecha_inicio) as max_fecha
+            MIN("Fecha Inicio") as min_fecha,
+            MAX("Fecha Inicio") as max_fecha
         FROM {table_name}
         """
         
