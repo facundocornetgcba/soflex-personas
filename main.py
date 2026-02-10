@@ -1,7 +1,9 @@
 import os
 import sys
-# Asegúrate de importar las funciones correctamente
-from data_processor import get_drive_service, download_file_as_bytes, procesar_datos
+# Importar funciones desde los módulos refactorizados
+from core.drive_manager import get_drive_service, download_file_as_bytes, get_max_date_from_parquet
+from core.db_connections import get_table_stats
+from data_processor import procesar_datos
 
 # --- CONFIGURACIÓN DE CARPETAS (IDs ACTUALIZADOS) ---
 
@@ -57,11 +59,35 @@ def main():
         print(f"❌ Error descargando archivo: {e}")
         return
 
-    # 4. Enviar al Procesador (ETL + BigQuery)
-    # IMPORTANTE: Pasamos los datos del Excel Y el ID de la carpeta DB para guardar el parquet
+    # 3.5 NUEVO: Detectar watermark para carga incremental
+    print(f"\n🔍 Detectando watermark del histórico limpio...")
+    watermark = get_max_date_from_parquet(service, '2025_historico_limpio.parquet', DB_FOLDER_ID)
+    
+    if watermark:
+        print(f"✅ Watermark detectado: {watermark}")
+        print(f"   Solo se procesarán registros con Fecha Inicio > {watermark}")
+    else:
+        print(f"⚠️  No se detectó watermark (histórico vacío o no existe)")
+        print(f"   Se procesarán todos los registros (modo primera carga)")
+    print()
+    
+    # Opcional: Mostrar estadísticas actuales de Neon
     try:
-        procesar_datos(excel_bytes, DB_FOLDER_ID)
-        print("🚀 Ciclo completo finalizado. BigQuery y Drive actualizados.")
+        stats = get_table_stats('historico_limpio')
+        if stats:
+            print(f"📊 Estado actual de Neon PostgreSQL:")
+            print(f"   Registros totales: {stats['total_records']:,}")
+            print(f"   Fecha mínima: {stats['min_fecha']}")
+            print(f"   Fecha máxima: {stats['max_fecha']}")
+            print()
+    except Exception:
+        pass  # Si falla, continuar sin estadísticas
+
+    # 4. Enviar al Procesador (ETL Incremental + Neon + Drive)
+    # IMPORTANTE: Pasamos el watermark para procesar solo datos nuevos
+    try:
+        procesar_datos(excel_bytes, DB_FOLDER_ID, watermark=watermark)
+        print("🚀 Ciclo completo finalizado. Neon PostgreSQL y Drive actualizados.")
     except Exception as e:
         print(f"❌ Error durante el procesamiento: {e}")
         # Hacemos raise para que GitHub Actions marque error si falla
