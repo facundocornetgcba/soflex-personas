@@ -110,9 +110,16 @@ def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crea
             return ('NO BRINDO/NO VISIBLE', 'solo_letras_repetidas')
         if PATRON_EXTRANJERO.search(s_lower): 
             return ('CONTACTO EXTRANJERO', 'patron_extranjero')
-        digits = re.sub(r'\\D', '', s)
+        
+        # Limpieza robusta de dígitos
+        digits = re.sub(r'\D', '', s)
+        
         if 6 <= len(digits) <= 10: 
-            return (int(digits), 'dni_valido')
+            try:
+                return (int(digits), 'dni_valido')
+            except ValueError:
+                return ('NO BRINDO/NO VISIBLE', 'error_conversion')
+                
         if len(digits) < 6 or re.search(r'[A-Za-z]', s_lower): 
             return ('NO BRINDO/NO VISIBLE', 'texto_o_corto')
         return ('NO BRINDO/NO VISIBLE', 'resto_no_brindo')

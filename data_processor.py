@@ -13,10 +13,14 @@ from sqlalchemy import create_engine
 # Importar desde módulos core
 from core.drive_manager import (
     get_drive_service, 
-    download_parquet_as_df, 
-    upload_df_as_parquet
+    upload_df_as_parquet,
+    download_parquet_as_df  # Recuperado para backup
 )
-from core.db_connections import upload_to_neon_incremental
+from core.db_connections import (
+    upload_to_neon_incremental,
+    download_from_neon,
+    get_max_date_from_neon
+)
 from core.transformations import (
     limpiar_texto,
     limpiar_texto_cierre,
@@ -48,61 +52,61 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
     """
     service = get_drive_service()
     
-    # ---------------------------------------------------------
-    # FASE 1: ACTUALIZACIÓN DEL CRUDO (INCREMENTAL)
-    # ---------------------------------------------------------
-    print("🚀 Iniciando Fase 1: Actualización del Crudo (Modo Incremental)...")
+    # Nombres de referencias
+    TABLE_LIMPIO = 'historico_limpio'
+    FILE_LIMPIO = "2025_historico_limpio.parquet"
     
-    df_nuevo = pd.read_excel(io.BytesIO(excel_content_bytes), skiprows=1)
-    nombre_crudo = "2025_historico_v2.parquet"
-    df_hist = download_parquet_as_df(service, nombre_crudo, folder_id)
-
-    # Normalización de Fechas
+    # ---------------------------------------------------------
+    # FASE 1: LECTURA Y FILTRADO (Estrategia Direct Append)
+    # ---------------------------------------------------------
+    print(f"🚀 Iniciando Procesamiento (Estrategia: Direct Append a {TABLE_LIMPIO})...")
+    
+    # Leer Excel Nuevo
+    try:
+        df_nuevo = pd.read_excel(io.BytesIO(excel_content_bytes), skiprows=1)
+    except Exception as e:
+        print(f"❌ Error leyendo Excel: {e}")
+        return None
+    
+    # Normalización de Fechas (Para poder filtrar)
     col_fecha = 'Fecha Inicio'
-    for df in [df_hist, df_nuevo]:
-        if not df.empty:
-            for col in [col_fecha, 'Fecha Fin', 'Recurso Fecha Liberado', 'Recurso Fecha asignacion', 'Recurso Arribo']:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
+    if col_fecha in df_nuevo.columns:
+        df_nuevo[col_fecha] = pd.to_datetime(df_nuevo[col_fecha], errors='coerce')
+    
+    # Filtrado Incremental
+    if watermark:
+        print(f"📅 Filtrando nuevos registros posteriores a: {watermark}")
+        df_filtrado_nuevo = df_nuevo[df_nuevo[col_fecha] > watermark].copy()
+    else:
+        print("📅 No hay watermark. Se procesará TODO el archivo.")
+        df_filtrado_nuevo = df_nuevo.copy()
 
-    # Normalización Lat/Lon
-    for col in ['Latitud', 'Longitud']:
-        df_nuevo[col] = df_nuevo[col].astype(str).str.replace(',', '.', regex=False).astype(float)
-
-    # CAMBIO CRÍTICO: Filtrado incremental basado en watermark
-    if watermark is not None:
-        print(f"📅 Aplicando filtro incremental: Fecha Inicio > {watermark}")
-        df_filtrado_nuevo = df_nuevo[df_nuevo[col_fecha] > watermark]
-        print(f"   Registros en Excel: {len(df_nuevo):,}")
-        print(f"   Registros nuevos (post-watermark): {len(df_filtrado_nuevo):,}")
+    if df_filtrado_nuevo.empty:
+        print("⚠️ No hay registros nuevos para procesar.")
+        print("   Finalizando proceso sin cambios en Base de Datos.")
+        return None
         
-        if len(df_filtrado_nuevo) == 0:
-            print("⚠️ No hay registros nuevos para procesar.")
-            print("   El Excel no contiene datos más recientes que el histórico.")
-            print("   Finalizando proceso sin cambios.")
-            return None
-    elif not df_hist.empty:
-        # Fallback: usar MAX del histórico como en la lógica original
-        fecha_corte = df_hist[col_fecha].max()
-        print(f"📅 Watermark no recibido. Usando MAX del histórico: {fecha_corte}")
-        df_filtrado_nuevo = df_nuevo[df_nuevo[col_fecha] > fecha_corte]
-    else:
-        df_filtrado_nuevo = df_nuevo
-        print("📅 No hay histórico previo. Se procesará todo el Excel (primera carga).")
+    print(f"✅ Registros nuevos a procesar: {len(df_filtrado_nuevo):,}")
 
-    # Concatenar y guardar
-    if not df_filtrado_nuevo.empty:
-        df_actualizado = pd.concat([df_hist, df_filtrado_nuevo], ignore_index=True)
-        upload_df_as_parquet(service, df_actualizado, nombre_crudo, folder_id)
-        print(f"✅ Se agregaron {len(df_filtrado_nuevo):,} registros nuevos al crudo.")
-        print(f"   Total en histórico crudo: {len(df_actualizado):,} registros")
-    else:
-        print("⚠️ No hay registros nuevos para agregar. Usando histórico existente.")
-        df_actualizado = df_hist
-
-    # Limpieza de memoria
-    del df_hist, df_nuevo, df_filtrado_nuevo
+    # Limpieza de memoria temporal
+    del df_nuevo
     gc.collect()
+
+    # Renombramos variable para seguir lógica del script
+    df_actualizado = df_filtrado_nuevo 
+
+    # Normalización Lat/Lon (Crítico para Spatial Join posterior)
+    for col in ['Latitud', 'Longitud']:
+        if col in df_actualizado.columns:
+            # Asegurar que sean strings antes de reemplazar y luego float
+            df_actualizado[col] = df_actualizado[col].astype(str).str.replace(',', '.', regex=False)
+            df_actualizado[col] = pd.to_numeric(df_actualizado[col], errors='coerce')
+
+    # Normalización de columnas de texto (Strip y Title)
+    cols_obj = df_actualizado.select_dtypes(include=['object']).columns
+    for col in cols_obj:
+        if col != 'RESULTADO': # Excluir si es necesario
+             df_actualizado[col] = df_actualizado[col].astype(str).str.strip().str.title()
 
     # ---------------------------------------------------------
     # FASE 2: ENRIQUECIMIENTO GEOGRÁFICO (COMUNAS)
@@ -318,37 +322,49 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
     print(f"✅ Clasificación completada - Lógica EXACTA de dashboardgenerator replicada")
     # === FIN BLOQUE EVOLUCIÓN DNI ===
 
+
+
     # ---------------------------------------------------------
-    # GUARDADO FINAL (DRIVE Y NEON INCREMENTAL)
+    # GUARDADO FINAL (NEON APPEND + DRIVE BACKUP)
     # ---------------------------------------------------------
-    nombre_limpio = "2025_historico_limpio.parquet"
+    # 1. Subida a Neon PostgreSQL (DIRECT APPEND)
+    print(f"\n📤 Guardando en Neon PostgreSQL: {TABLE_LIMPIO} (Append)...")
     
-    # 1. Subida a Drive (REEMPLAZA TODO EL ARCHIVO - Source of Truth)
-    # Drive mantiene el histórico completo como fuente de verdad
-    upload_df_as_parquet(service, df_actualizado, nombre_limpio, folder_id)
+    # Carga incremental directa (mucho más rápido)
+    upload_to_neon_incremental(df_actualizado, TABLE_LIMPIO, if_exists='append')
     
-    # 2. Subida INCREMENTAL a Neon PostgreSQL
-    # CAMBIO CRÍTICO: Ahora usa 'append' en lugar de 'replace'
-    # Solo cargamos los registros nuevos procesados en esta ejecución
-    TABLE_NAME = 'historico_limpio'
-    
-    if watermark is not None and not df_filtrado_nuevo.empty:
-        # Carga incremental: solo subir los registros nuevos procesados
-        print(f"\n📤 Preparando carga incremental a Neon...")
+    # 2. Backup a Google Drive (MANTENER HISTÓRICO COMPLETO)
+    # Como solo tenemos los datos nuevos en memoria, necesitamos:
+    # a) Descargar el histórico actual de Drive
+    # b) Concatenar lo nuevo
+    # c) Subir todo de nuevo
+    print(f"\n💾 Actualizando backup en Google Drive: {FILE_LIMPIO}...")
+    try:
+        df_drive_actual = download_parquet_as_df(service, FILE_LIMPIO, folder_id)
+        if not df_drive_actual.empty:
+             # Concatenar
+             # Asegurar tipos de fecha compatibles
+             if col_fecha in df_drive_actual.columns:
+                 df_drive_actual[col_fecha] = pd.to_datetime(df_drive_actual[col_fecha], errors='coerce')
+                 
+             df_backup_completo = pd.concat([df_drive_actual, df_actualizado], ignore_index=True)
+             print(f"   Concatenando nuevos ({len(df_actualizado)}) con existentes ({len(df_drive_actual)}). Total: {len(df_backup_completo)}")
+        else:
+             df_backup_completo = df_actualizado
+             print("   Backup anterior vacío o no encontrado. Creando nuevo.")
+             
+        # Subir backup completo
+        upload_df_as_parquet(service, df_backup_completo, FILE_LIMPIO, folder_id)
+        print(f"✅ Backup en Drive actualizado Correctamente")
         
-        # Necesitamos aplicar las mismas transformaciones al subset de datos nuevos
-        # para mantener consistencia con Drive
-        # Por simplicidad, cargaremos TODO el df_actualizado con REPLACE por ahora
-        # TODO futuro: optimizar para cargar solo df_filtrado_nuevo con APPEND
-        print(f"⚠️  NOTA: Actualmente se hace REPLACE completo por compatibilidad")
-        print(f"   Esto garantiza consistencia total entre Drive y Neon")
-        upload_to_neon_incremental(df_actualizado, TABLE_NAME, if_exists='replace')
-    else:
-        # Primera carga o recarga completa
-        print(f"\n📤 Carga completa a Neon (primera vez o sin watermark)...")
-        upload_to_neon_incremental(df_actualizado, TABLE_NAME, if_exists='replace')
+        # Limpieza memoria
+        del df_drive_actual, df_backup_completo
+        gc.collect()
+        
+    except Exception as e:
+        print(f"⚠️ Error actualizando backup en Drive: {e}")
+        print("   Los datos sí se guardaron en Neon, pero el backup de Drive podría estar desactualizado.")
     
-    print(f"\n🎉 Proceso Terminado. Limpio actualizado al día {df_actualizado[col_fecha].max()}")
-    print(f"   Total de registros procesados: {len(df_actualizado):,}")
+    print(f"\n🎉 Proceso Terminado. Neon actualizado con {len(df_actualizado)} registros nuevos.")
     
     return df_actualizado

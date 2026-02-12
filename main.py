@@ -1,8 +1,8 @@
 import os
 import sys
 # Importar funciones desde los módulos refactorizados
-from core.drive_manager import get_drive_service, download_file_as_bytes, get_max_date_from_parquet
-from core.db_connections import get_table_stats
+from core.drive_manager import get_drive_service, download_file_as_bytes
+from core.db_connections import get_table_stats, get_max_date_from_neon
 from data_processor import procesar_datos
 
 # --- CONFIGURACIÓN DE CARPETAS (IDs ACTUALIZADOS) ---
@@ -59,15 +59,15 @@ def main():
         print(f"❌ Error descargando archivo: {e}")
         return
 
-    # 3.5 NUEVO: Detectar watermark para carga incremental
-    print(f"\n🔍 Detectando watermark del histórico limpio...")
-    watermark = get_max_date_from_parquet(service, '2025_historico_limpio.parquet', DB_FOLDER_ID)
+    # 3.5 NUEVO: Detectar watermark para carga incremental desde NEON (LIMPIO)
+    print(f"\n🔍 Detectando watermark desde Neon PostgreSQL (tabla limpio: historico_limpio)...")
+    watermark = get_max_date_from_neon('historico_limpio', 'Fecha Inicio')
     
     if watermark:
         print(f"✅ Watermark detectado: {watermark}")
         print(f"   Solo se procesarán registros con Fecha Inicio > {watermark}")
     else:
-        print(f"⚠️  No se detectó watermark (histórico vacío o no existe)")
+        print(f"⚠️  No se detectó watermark en Neon (tabla vacía o no existe)")
         print(f"   Se procesarán todos los registros (modo primera carga)")
     print()
     
@@ -87,7 +87,7 @@ def main():
     # IMPORTANTE: Pasamos el watermark para procesar solo datos nuevos
     try:
         procesar_datos(excel_bytes, DB_FOLDER_ID, watermark=watermark)
-        print("🚀 Ciclo completo finalizado. Neon PostgreSQL y Drive actualizados.")
+        print("🚀 Ciclo completo finalizado. Neon PostgreSQL actualizado y respaldado en Drive.")
     except Exception as e:
         print(f"❌ Error durante el procesamiento: {e}")
         # Hacemos raise para que GitHub Actions marque error si falla
