@@ -27,14 +27,30 @@ def get_neon_connection_string():
     if conn_str:
         print("✅ Using DATABASE_URL from environment variable")
         return conn_str
+
+    # Try reading from credentials.json (User's local setup)
+    import json
+    try:
+        # Path relative to the project root (assuming this runs from root or finding via file path)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        creds_path = os.path.join(base_dir, 'credentials.json')
+        
+        if os.path.exists(creds_path):
+            with open(creds_path, 'r') as f:
+                creds = json.load(f)
+                if 'DATABASE_URL' in creds:
+                    print("✅ Using DATABASE_URL from credentials.json")
+                    return creds['DATABASE_URL']
+    except Exception as e:
+        print(f"⚠️ Warning: Could not read credentials.json for DATABASE_URL: {e}")
     
     # Fallback to hardcoded connection string
     conn_str = (
-        "postgresql://neondb_owner:npg_3X7LoQzdmWhH"
-        "@ep-square-paper-a89hpeb2-pooler.eastus2.azure.neon.tech"
+        "postgresql://neondb_owner:npg_SiupRP9q8zxo"
+        "@ep-frosty-pond-a8jhmrf3-pooler.eastus2.azure.neon.tech"
         "/neondb?sslmode=require&channel_binding=require"
     )
-    print("⚠️ Using hardcoded DATABASE_URL (dev mode)")
+    print("⚠️ Using hardcoded DATABASE_URL (fallback)")
     return conn_str
 
 
