@@ -1,0 +1,6 @@
+#!/Users/patriciolr/Repos/autom-bap-personas/.venv/bin/python3.11
+import sys
+from functions_framework._cli import _cli
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(_cli())
