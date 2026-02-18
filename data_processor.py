@@ -19,7 +19,8 @@ from core.drive_manager import (
 from core.db_connections import (
     upload_to_neon_incremental,
     download_from_neon,
-    get_max_date_from_neon
+    get_max_date_from_neon,
+    get_dni_history
 )
 from core.transformations import (
     limpiar_texto,
@@ -30,15 +31,55 @@ from core.transformations import (
 )
 
 # ==========================================
-# NOTA: Las siguientes funciones fueron movidas a módulos core:
-# - get_drive_service, download_*, upload_* -> core/drive_manager.py
-# - upload_to_neon_incremental -> core/db_connections.py
-# - limpiar_*, mapear_*, obtener_niveles -> core/transformations.py
-# ==========================================
-
-# ==========================================
 # LÓGICA PRINCIPAL DEL PROCESO
 # ==========================================
+
+def normalizar_columnas(df):
+    """
+    Normaliza robustamente los nombres de las columnas del DataFrame de entrada.
+    Mapea variantes comunes a los nombres estándar usados en el resto del proceso.
+    """
+    STANDARD_MAP = {
+        'fecha_inicio': 'Fecha Inicio',
+        'fecha_fin': 'Fecha Fin',
+        'persona_dni': 'Persona DNI',
+        'persona_nombre': 'Persona Nombre',
+        'persona_apellido': 'Persona Apellido',
+        'latitud': 'Latitud',
+        'longitud': 'Longitud',
+        'agencia': 'Agencia',
+        'resultado': 'Resultado',
+        'cierre_supervisor': 'Cierre Supervisor',
+        'cierre_despachador': 'Cierre Despachador',
+        'id_suceso': 'Id Suceso'
+    }
+    
+    # --- PASO EXTRA: Si no detectamos columnas clave, tal vez están en la primera fila ---
+    # Buscamos 'fecha' en los nombres de columnas actuales
+    hay_fecha = any('fecha' in str(c).lower() for c in df.columns)
+    
+    if not hay_fecha and not df.empty:
+        # Probamos ver si el header está en la fila 0
+        primera_fila = df.iloc[0].astype(str).str.lower().str.strip().tolist()
+        if any('fecha' in str(val) for val in primera_fila):
+            print("💡 Detectada cabecera en la primera fila de datos. Re-asignando...")
+            df.columns = df.iloc[0]
+            df = df[1:].reset_index(drop=True)
+            # Volver a calcular current_cols
+    
+    # 1. Limpieza básica: strip y lower para el matching inicial
+    current_cols = {c: str(c).strip().lower() for c in df.columns}
+    
+    rename_map = {}
+    for original, clean in current_cols.items():
+        if clean in STANDARD_MAP:
+            rename_map[original] = STANDARD_MAP[clean]
+            
+    if rename_map:
+        print(f"🔄 Normalizando columnas: {rename_map}")
+        df.rename(columns=rename_map, inplace=True)
+    
+    return df
 
 
 def procesar_datos(excel_content_bytes, folder_id, watermark=None):
@@ -57,25 +98,58 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
     FILE_LIMPIO = "2025_historico_limpio.parquet"
     
     # ---------------------------------------------------------
-    # FASE 1: LECTURA Y FILTRADO (Estrategia Direct Append)
+    # FASE 0: DESCARGA DE HISTORIAL (Source of Truth)
     # ---------------------------------------------------------
-    print(f"🚀 Iniciando Procesamiento (Estrategia: Direct Append a {TABLE_LIMPIO})...")
+    print(f"🚀 Iniciando Procesamiento (Master Flow: {FILE_LIMPIO} -> Neon)...")
+    
+    # Descargar historial completo de Drive
+    try:
+        df_historico_full = download_parquet_as_df(service, FILE_LIMPIO, folder_id)
+        if not df_historico_full.empty:
+            # Asegurar que las fechas sean datetime
+            for col in ['Fecha Inicio', 'Fecha Fin']:
+                if col in df_historico_full.columns:
+                    df_historico_full[col] = pd.to_datetime(df_historico_full[col], errors='coerce')
+            
+            # Si no se pasó watermark por argumento, lo tomamos del Parquet
+            if watermark is None:
+                watermark = df_historico_full['Fecha Inicio'].max()
+                print(f"📅 Watermark detectado desde Parquet: {watermark}")
+        else:
+            print("⚠️ Parquet histórico no encontrado o vacío.")
+    except Exception as e:
+        print(f"⚠️ Error cargando historial de Drive: {e}")
+        df_historico_full = pd.DataFrame()
+
+    # ---------------------------------------------------------
+    # FASE 1: LECTURA Y FILTRADO DEL NUEVO EXCEL
+    # ---------------------------------------------------------
     
     # Leer Excel Nuevo
     try:
-        df_nuevo = pd.read_excel(io.BytesIO(excel_content_bytes), skiprows=1)
+        df_nuevo = pd.read_excel(io.BytesIO(excel_content_bytes))
     except Exception as e:
         print(f"❌ Error leyendo Excel: {e}")
         return None
     
-    # Normalización de Fechas (Para poder filtrar)
+    # NORMALIZACIÓN ROBUSTA DE CABECERAS
+    df_nuevo = normalizar_columnas(df_nuevo)
+
     col_fecha = 'Fecha Inicio'
+    
+    # Normalización de Fechas (Para poder filtrar)
     if col_fecha in df_nuevo.columns:
         df_nuevo[col_fecha] = pd.to_datetime(df_nuevo[col_fecha], errors='coerce')
+    else:
+        print(f"❌ ERROR: No se encontró '{col_fecha}'.")
+        print(f"   Columnas disponibles: {list(df_nuevo.columns)}")
+        print(f"   Primeras 3 filas:")
+        print(df_nuevo.head(3))
+        raise KeyError(f"No se encontró la columna de fecha ('{col_fecha}') en el Excel. Ver logs arriba.")
     
     # Filtrado Incremental
     if watermark:
-        print(f"📅 Filtrando nuevos registros posteriores a: {watermark}")
+        print(f"📅 Filtrando registros posteriores a: {watermark}")
         df_filtrado_nuevo = df_nuevo[df_nuevo[col_fecha] > watermark].copy()
     else:
         print("📅 No hay watermark. Se procesará TODO el archivo.")
@@ -83,7 +157,6 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
 
     if df_filtrado_nuevo.empty:
         print("⚠️ No hay registros nuevos para procesar.")
-        print("   Finalizando proceso sin cambios en Base de Datos.")
         return None
         
     print(f"✅ Registros nuevos a procesar: {len(df_filtrado_nuevo):,}")
@@ -102,11 +175,25 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
             df_actualizado[col] = df_actualizado[col].astype(str).str.replace(',', '.', regex=False)
             df_actualizado[col] = pd.to_numeric(df_actualizado[col], errors='coerce')
 
+    # ELIMINAR COLUMNAS PREVIAS DE CÁLCULO (Si existen) para evitar colisiones en sjoin/DB
+    # Estas se recalcularán en el script.
+    # Buscamos todas las variaciones de 'comuna' o 'comuna_calculada'
+    variaciones = ['comuna', 'comuna_calculada', 'Comuna_calculada', 'Comuna', 'COMUNA']
+    df_actualizado = df_actualizado.drop(columns=[c for c in variaciones if c in df_actualizado.columns], errors='ignore')
+
     # Normalización de columnas de texto (Strip y Title)
+    # CRÍTICO: No convertir columnas de FECHA a string, ya que eso rompe la inserción en el DB (genera "Nan")
+    date_cols_known = [
+        'Fecha Inicio', 'Fecha Fin', 'Recurso Fecha asignacion', 
+        'Recurso Arribo', 'Recurso Fecha Liberado', 'Persona Fecha Nacimiento'
+    ]
+    
     cols_obj = df_actualizado.select_dtypes(include=['object']).columns
     for col in cols_obj:
-        if col != 'RESULTADO': # Excluir si es necesario
+        if col not in date_cols_known and col != 'RESULTADO':
              df_actualizado[col] = df_actualizado[col].astype(str).str.strip().str.title()
+             # Reemplazar 'Nan' literal por valor nulo real
+             df_actualizado[col] = df_actualizado[col].replace(['Nan', 'None', 'Nat'], np.nan)
 
     # ---------------------------------------------------------
     # FASE 2: ENRIQUECIMIENTO GEOGRÁFICO (COMUNAS)
@@ -268,8 +355,27 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
     print("🔄 Clasificando DNIs semana por semana...")
     
     semanas = sorted(df_sem['Semana'].unique())
-    dni_last_comuna = {}  # Diccionario: DNI -> última comuna vista
-    dni_seen = set()      # Set de todos los DNIs que hemos visto
+    
+    # SEED HISTORIAL (Desde el Parquet cargado en Fase 0)
+    print("🦷 Sembrando historial de DNIs desde el Parquet histórico...")
+    if not df_historico_full.empty and 'DNI_Categorizado' in df_historico_full.columns:
+        # Replicar lógica de get_dni_history pero con el DF en memoria
+        # Quedarse con el último registro por DNI
+        df_hist_dnis = df_historico_full[df_historico_full['DNI_Categorizado'].notna()].copy()
+        # Filtros de anónimos (basados en logica de data_processor)
+        df_hist_dnis = df_hist_dnis[~df_hist_dnis['DNI_Categorizado'].isin(anonimos)]
+        
+        # Ordenar por fecha y quedarse con el último por DNI
+        df_hist_dnis = df_hist_dnis.sort_values('Fecha Inicio').drop_duplicates(subset=['DNI_Categorizado'], keep='last')
+        
+        dni_last_comuna = dict(zip(df_hist_dnis['DNI_Categorizado'].astype(str), df_hist_dnis['comuna_calculada']))
+        dni_seen = set(dni_last_comuna.keys())
+        print(f"✅ Historial sembrado con {len(dni_seen):,} DNIs previos.")
+        del df_hist_dnis
+    else:
+        print("⚠️ No hay historial previo para sembrar. Iniciando limpio.")
+        dni_last_comuna = {}
+        dni_seen = set()
     
     # Lista para almacenar resultados de clasificación
     clasificaciones = []
@@ -325,46 +431,34 @@ def procesar_datos(excel_content_bytes, folder_id, watermark=None):
 
 
     # ---------------------------------------------------------
-    # GUARDADO FINAL (NEON APPEND + DRIVE BACKUP)
+    # GUARDADO FINAL (DRIVE REPLACE + NEON REPLACE)
     # ---------------------------------------------------------
-    # 1. Subida a Neon PostgreSQL (DIRECT APPEND)
-    print(f"\n📤 Guardando en Neon PostgreSQL: {TABLE_LIMPIO} (Append)...")
     
-    # Carga incremental directa (mucho más rápido)
-    upload_to_neon_incremental(df_actualizado, TABLE_LIMPIO, if_exists='append')
-    
-    # 2. Backup a Google Drive (MANTENER HISTÓRICO COMPLETO)
-    # Como solo tenemos los datos nuevos en memoria, necesitamos:
-    # a) Descargar el histórico actual de Drive
-    # b) Concatenar lo nuevo
-    # c) Subir todo de nuevo
-    print(f"\n💾 Actualizando backup en Google Drive: {FILE_LIMPIO}...")
+    # 1. Crear el DataFrame completo (Master Update)
+    if not df_historico_full.empty:
+         df_actualizado_completo = pd.concat([df_historico_full, df_actualizado], ignore_index=True)
+         print(f"\n📊 Generando df_actualizado completo (histórico + nuevos). Total: {len(df_actualizado_completo):,}")
+    else:
+         df_actualizado_completo = df_actualizado
+         print(f"\n📊 Generando df_actualizado completo (primera carga). Total: {len(df_actualizado_completo):,}")
+
+    # 5. Upload REPLACE a Drive
+    print(f"💾 5. Subiendo REPLACE a Drive: {FILE_LIMPIO}...")
     try:
-        df_drive_actual = download_parquet_as_df(service, FILE_LIMPIO, folder_id)
-        if not df_drive_actual.empty:
-             # Concatenar
-             # Asegurar tipos de fecha compatibles
-             if col_fecha in df_drive_actual.columns:
-                 df_drive_actual[col_fecha] = pd.to_datetime(df_drive_actual[col_fecha], errors='coerce')
-                 
-             df_backup_completo = pd.concat([df_drive_actual, df_actualizado], ignore_index=True)
-             print(f"   Concatenando nuevos ({len(df_actualizado)}) con existentes ({len(df_drive_actual)}). Total: {len(df_backup_completo)}")
-        else:
-             df_backup_completo = df_actualizado
-             print("   Backup anterior vacío o no encontrado. Creando nuevo.")
-             
-        # Subir backup completo
-        upload_df_as_parquet(service, df_backup_completo, FILE_LIMPIO, folder_id)
-        print(f"✅ Backup en Drive actualizado Correctamente")
-        
-        # Limpieza memoria
-        del df_drive_actual, df_backup_completo
-        gc.collect()
-        
+        upload_df_as_parquet(service, df_actualizado_completo, FILE_LIMPIO, folder_id)
+        print(f"✅ Drive actualizado exitosamente.")
     except Exception as e:
-        print(f"⚠️ Error actualizando backup en Drive: {e}")
-        print("   Los datos sí se guardaron en Neon, pero el backup de Drive podría estar desactualizado.")
+        print(f"⚠️ Error subiendo a Drive: {e}")
     
-    print(f"\n🎉 Proceso Terminado. Neon actualizado con {len(df_actualizado)} registros nuevos.")
+    # 6. Upload REPLACE a Neon PostgreSQL
+    print(f"📤 6. Subiendo REPLACE a Neon PostgreSQL: {TABLE_LIMPIO}...")
+    try:
+        # Usamos if_exists='replace' para que la tabla coincida exactamente con el Parquet
+        upload_to_neon_incremental(df_actualizado_completo, TABLE_LIMPIO, if_exists='replace')
+        print(f"✅ Neon PostgreSQL sincronizado exitosamente (Full Replace).")
+    except Exception as e:
+        print(f"❌ Error sincronizando Neon: {e}")
+
+    print(f"\n🎉 Proceso Finalizado según flujo diagramado.")
     
-    return df_actualizado
+    return df_actualizado_completo

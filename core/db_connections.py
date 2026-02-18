@@ -277,3 +277,51 @@ def get_table_stats(table_name):
         return None
     finally:
         engine.dispose()
+
+
+def get_dni_history(table_name='historico_limpio'):
+    """
+    Retrieves the latest 'comuna_calculada' for each unique 'dni_categorizado' 
+    from Neon to serve as history for incremental classification.
+    
+    Returns:
+        dict: {dni: last_comuna}
+    """
+    print(f"🔍 Recuperando historial de DNIs desde Neon (tabla '{table_name}')...")
+    
+    try:
+        engine = get_neon_engine()
+        
+        # Obtenemos el último estado de cada DNI usando ROW_NUMBER para máxima compatibilidad
+        query = f"""
+        SELECT dni_categorizado, comuna_calculada
+        FROM (
+            SELECT 
+                dni_categorizado, 
+                comuna_calculada,
+                ROW_NUMBER() OVER(PARTITION BY dni_categorizado ORDER BY fecha_inicio DESC) as rn
+            FROM "{table_name}"
+            WHERE dni_categorizado IS NOT NULL
+              AND dni_categorizado NOT IN ('NO BRINDO/NO VISIBLE', 'NO BRINDO', 'NO VISIBLE', 'S/D', 'CONTACTO EXTRANJERO')
+        ) t
+        WHERE rn = 1
+        """
+        
+        df_hist = pd.read_sql(query, engine)
+        
+        if df_hist.empty:
+            print("⚠️ No hay historial previo de DNIs en la base de datos.")
+            return {}
+            
+        # Convertir a diccionario para búsqueda rápida: {dni: comuna}
+        # Aseguramos que el DNI sea string para consistencia con el clasificador
+        history_dict = dict(zip(df_hist['dni_categorizado'].astype(str), df_hist['comuna_calculada']))
+        
+        print(f"✅ Historial recuperado: {len(history_dict):,} DNIs únicos encontrados.")
+        return history_dict
+        
+    except Exception as e:
+        print(f"⚠️ Error recuperando historial de DNIs: {e}")
+        return {}
+    finally:
+        engine.dispose()
