@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soflex Personas — Tableros</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            primary: '#1a56db',
+            surface: '#1e2433',
+            card: '#252d3d',
+            border: '#2e3a52',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #141927; }
+    .card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(26,86,219,0.25); }
+    .card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-8 font-sans">
+
+  <div class="w-full max-w-3xl">
+
+    <!-- Header -->
+    <div class="mb-10 text-center">
+      <p class="text-xs uppercase tracking-widest text-blue-400 mb-2 font-semibold">Dirección de Personas</p>
+      <h1 class="text-3xl font-bold text-white">Tableros Operativos</h1>
+      <p class="text-slate-400 mt-2 text-sm">Buenos Aires Presente</p>
+    </div>
+
+    <!-- Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+
+      <!-- Tablero Operativo BAP -->
+      <a href="reporte_autom_bap.html" class="card block bg-[#252d3d] border border-[#2e3a52] rounded-2xl p-6 no-underline">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <span class="text-xs font-semibold uppercase tracking-wide text-blue-400">Tablero Operativo</span>
+        </div>
+        <h2 class="text-white font-bold text-lg leading-tight mb-2">Tablero Operativo BA</h2>
+        <p class="text-slate-400 text-sm">Metricas generales de intervenciones, estados y tiempos operativos del equipo.</p>
+        <div class="mt-5 flex items-center text-blue-400 text-sm font-semibold gap-1">
+          Ver tablero
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </a>
+
+      <!-- Reporte Semanal Origen -->
+      <a href="reporte_semanal_origen.html" class="card block bg-[#252d3d] border border-[#2e3a52] rounded-2xl p-6 no-underline">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center flex-shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <span class="text-xs font-semibold uppercase tracking-wide text-indigo-400">Reporte Semanal</span>
+        </div>
+        <h2 class="text-white font-bold text-lg leading-tight mb-2">Origen y Nivel de Contacto</h2>
+        <p class="text-slate-400 text-sm">Distribucion semanal de intervenciones por origen, nivel de contacto y resultados.</p>
+        <div class="mt-5 flex items-center text-indigo-400 text-sm font-semibold gap-1">
+          Ver tablero
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </a>
+
+    </div>
+
+    <!-- Footer -->
+    <p class="text-center text-slate-600 text-xs mt-10">Actualizado automaticamente via GitHub Actions</p>
+
+  </div>
+
+</body>
+</html>

@@ -33,13 +33,13 @@ def limpiar_texto(nombre):
     nombre = ''.join(c for c in unicodedata.normalize('NFD', nombre) if unicodedata.category(c) != 'Mn')
     nombre = re.sub(r'[-.,]', ' ', nombre)
     nombre = re.sub(r'[^A-Z ]', '', nombre)
-    nombre = re.sub(r'\\s+', ' ', nombre).strip()
+    nombre = re.sub(r'\s+', ' ', nombre).strip()
     return nombre if nombre else None
 
 
 def limpiar_texto_cierre(s):
     """
-    Limpia texto de categorías de cierre para matching.
+    Limpia texto de categoras de cierre para matching.
     
     Args:
         s: Input text to clean
@@ -52,8 +52,8 @@ def limpiar_texto_cierre(s):
     s = str(s).lower().strip()
     s = unidecode.unidecode(s)
     s = s.replace("_", " ").replace("-", " ")
-    s = re.sub(r"[^a-z0-9áéíóúüñ\\s]", " ", s)
-    s = re.sub(r"\\s+", " ", s)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s)
     return s.strip()
 
 
@@ -64,13 +64,13 @@ def limpiar_texto_cierre(s):
 # Regex patterns for DNI classification
 PATRON_EXTRANJERO = re.compile(
     r'(extranjero|paraguay|venezol|colombian|uruguay|brasil|chilen|peruano|mexican|'
-    r'español|dominican|dominicana|pasaporte|c\\.?d\\.?[ie]:?|rnm|cedula|ciudadano\\s+extranjero)', 
+    r'espaol|dominican|dominicana|pasaporte|c\\.?d\\.?[ie]:?|rnm|cedula|ciudadano\\s+extranjero)',
     flags=re.IGNORECASE
 )
 PATRON_NO_BRINDO_GENERICOS = re.compile(
     r'(no\\s*brind|no\\s*bri[nm]d|no\\s*aporta|no\\s*aporto|no\\s*indica|no\\s*sabe|'
     r'no\\s*recuerda|no\\s*recuerd|no\\s*tiene|nunca\\s*tuvo|sin\\s*dni|sin\\s*dato|'
-    r'sin\\s*inform|ilegible|invisible|no\\s*visible|exhib|no\\s*lo\\s*sabe|menor\\s*de\\s*edad)', 
+    r'sin\\s*inform|ilegible|invisible|no\\s*visible|exhib|no\\s*lo\\s*sabe|menor\\s*de\\s*edad)',
     flags=re.IGNORECASE
 )
 PATRON_NO_BRINDO_SIMBOLOS = re.compile(r'^[xX\\*\\-\\.]+$', flags=re.IGNORECASE)
@@ -80,7 +80,7 @@ PATRON_SOLO_LETRAS = re.compile(r'^[A-Za-z]+$')
 
 def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crear_motivo=True):
     """
-    Limpia y categoriza valores de DNI según reglas específicas.
+    Limpia y categoriza valores de DNI segn reglas especficas.
     
     Args:
         df (pd.DataFrame): DataFrame to process
@@ -111,7 +111,7 @@ def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crea
         if PATRON_EXTRANJERO.search(s_lower): 
             return ('CONTACTO EXTRANJERO', 'patron_extranjero')
         
-        # Limpieza robusta de dígitos
+        # Limpieza robusta de dgitos
         digits = re.sub(r'\D', '', s)
         
         if 6 <= len(digits) <= 10: 
@@ -124,10 +124,10 @@ def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crea
             return ('NO BRINDO/NO VISIBLE', 'texto_o_corto')
         return ('NO BRINDO/NO VISIBLE', 'resto_no_brindo')
 
-    print(f"⚙️ Procesando DNI: {columna_original}...")
+    print(f" Procesando DNI: {columna_original}...")
     resultados = df[columna_original].apply(procesar_valor)
     df[columna_salida] = resultados.apply(lambda x: x[0])
-    if crear_motivo: 
+    if crear_motivo:
         df[motivo_col] = resultados.apply(lambda x: x[1])
     return df
 
@@ -138,12 +138,13 @@ def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crea
 
 # Category lists
 CATEGORIAS_BRINDA_DATOS = [
-    "traslado efectivo a cis", 
-    "acepta cis pero no hay vacante", 
-    "se activa protocolo de salud mental", 
-    "derivacion a same", 
-    "traslado/acompanamiento a otros efectores", 
-    "mendicidad (menores de edad)"
+    "traslado efectivo a cis",
+    "acepta cis pero no hay vacante",
+    "se activa protocolo de salud mental",
+    "derivacion a same",
+    "traslado/acompanamiento a otros efectores",
+    "mendicidad (menores de edad)",
+    "derivacion a centro de nnnya",
 ]
 CATEGORIAS_NO_BRINDA_DATOS = [
     "se realiza entrevista", 
@@ -202,7 +203,15 @@ PATRONES_PERSONALIZADOS = {
     "espacio publico": "derivacion a espacio publico",
     "no se encuentra en situacion de calle": "no se encuentra en situacion de calle",
     "sin cubrir": "sin cubrir",
-    "desestimado": "desestimado (cartas 911 u otras areas)"
+    "desestimado": "desestimado (cartas 911 u otras areas)",
+    # Patrones adicionales detectados en el Excel actual
+    "derivacion a red":      "error de soflex",
+    "derivacion area cnnya": "derivacion a centro de nnnya",
+    "cnnya":                 "derivacion a centro de nnnya",
+    "cnnva":                 "derivacion a centro de nnnya",
+    "nnnya":                 "derivacion a centro de nnnya",
+    "nnya - 102":            "derivacion a centro de nnnya",
+    "centro nnnya":          "derivacion a centro de nnnya",
 }
 
 
@@ -212,15 +221,19 @@ def mapear_categoria_con_reglas(texto):
     1. Exact match
     2. Substring match
     3. Fuzzy match
-    
+
     Args:
         texto (str): Cleaned intervention outcome text
-        
+
     Returns:
         str: Mapped category or "sin_match" if no match found
     """
+    if pd.isna(texto):
+        return "sin_match"
+    texto = str(texto)
+
     # Tier 1: Exact match
-    if texto in PATRONES_EXACTOS: 
+    if texto in PATRONES_EXACTOS:
         return PATRONES_EXACTOS[texto]
     
     # Tier 2: Substring match
@@ -236,18 +249,47 @@ def mapear_categoria_con_reglas(texto):
 def obtener_niveles(cat):
     """
     Determines contact and data provision levels based on category.
-    
+
     Args:
         cat (str): Category name
-        
+
     Returns:
         tuple: (contact_level, data_level)
     """
-    if cat in CATEGORIAS_BRINDA_DATOS: 
+    if cat in CATEGORIAS_BRINDA_DATOS:
         return "Contacta", "Brinda datos"
-    elif cat in CATEGORIAS_NO_BRINDA_DATOS: 
+    elif cat in CATEGORIAS_NO_BRINDA_DATOS:
         return "Contacta", "No brinda datos"
-    elif cat in CATEGORIAS_NO_CONTACTA: 
+    elif cat in CATEGORIAS_NO_CONTACTA:
         return "No se contacta", ""
-    else: 
+    else:
         return "Derivaciones/seguimientos", ""
+
+
+# ==========================================
+# NIVEL DE CONTACTO (columna de alto nivel)
+# ==========================================
+
+SE_CONTACTA_CATS = CATEGORIAS_BRINDA_DATOS + CATEGORIAS_NO_BRINDA_DATOS
+NO_CONTACTA_CATS = CATEGORIAS_NO_CONTACTA
+
+
+def obtener_nivel_contacto(cat):
+    """
+    Maps a categoria_final to a high-level contact status.
+
+    Returns one of: "Se contacta", "No se contacta", "Sin dato",
+                    "Desestimado", "Otro"
+    """
+    if pd.isna(cat):
+        return "Sin dato"
+    cat_str = str(cat).strip().lower()
+    if cat_str in ("sin dato", "sin_match", ""):
+        return "Sin dato"
+    if "desestimado" in cat_str:
+        return "Desestimado"
+    if cat_str in SE_CONTACTA_CATS:
+        return "Se contacta"
+    if cat_str in NO_CONTACTA_CATS:
+        return "No se contacta"
+    return "Otro"
