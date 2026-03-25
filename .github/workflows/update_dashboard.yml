@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout del código
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Configurar Python
         uses: actions/setup-python@v4
@@ -46,6 +49,6 @@ jobs:
         run: |
           git config --global user.name 'GitHub Action Bot'
           git config --global user.email 'action@github.com'
-          git add reporte_autom_bap.html reporte_semanal_origen.html
+          git add reporte_autom_bap.html reporte_semanal_origen.html index.html
           git commit -m "Auto-update: Dashboard semanal" || echo "No hay cambios para commitear"
-          git push
+          git push origin HEAD:main
