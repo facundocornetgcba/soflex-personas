@@ -36,13 +36,16 @@ jobs:
         run: python main.py
       # ----------------------------------------------
 
-      - name: Ejecutar Generador
+      - name: Ejecutar Generador (Tablero Operativo)
         run: python dashboard_generator.py
+
+      - name: Ejecutar Generador (Reporte Semanal Origen)
+        run: python reporte_semanal_origen.py
 
       - name: Guardar cambios (Commit & Push)
         run: |
           git config --global user.name 'GitHub Action Bot'
           git config --global user.email 'action@github.com'
-          git add reporte_autom_bap.html
+          git add reporte_autom_bap.html reporte_semanal_origen.html
           git commit -m "Auto-update: Dashboard semanal" || echo "No hay cambios para commitear"
           git push

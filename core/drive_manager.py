@@ -8,9 +8,18 @@ This module centralizes all Google Drive API interactions including:
 - Watermark detection
 """
 
+import pandas as pd
+import sys
 import os
 import io
-import pandas as pd
+
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
@@ -66,7 +75,7 @@ def download_file_as_bytes(service, file_id):
     Returns:
         bytes: File content as bytes
     """
-    print(f"⬇️ Descargando archivo ID: {file_id}...")
+    print(f"⬇️  Descargando archivo ID: {file_id}...")
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -89,13 +98,13 @@ def download_parquet_as_df(service, file_name, folder_id):
     Returns:
         pd.DataFrame: DataFrame loaded from parquet, empty if file not found
     """
-    print(f"⬇️ Buscando '{file_name}' en Drive...")
+    print(f"🔎 Buscando '{file_name}' en Drive...")
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
     results = service.files().list(q=query, fields="files(id)").execute()
     files = results.get('files', [])
     
     if not files:
-        print(f"⚠️ Archivo {file_name} no encontrado. Se creará uno nuevo.")
+        print(f"⚠️  Archivo {file_name} no encontrado. Se crear uno nuevo.")
         return pd.DataFrame() 
 
     file_id = files[0]['id']
@@ -120,7 +129,7 @@ def upload_df_as_parquet(service, df, file_name, folder_id):
         file_name (str): Name for the parquet file
         folder_id (str): Google Drive folder ID
     """
-    print(f"⬆️ Subiendo '{file_name}' a Drive...")
+    print(f"⬆️  Subiendo '{file_name}' a Drive...")
     fh = io.BytesIO()
     df.to_parquet(fh, index=False, engine='pyarrow', compression='snappy')
     fh.seek(0)
@@ -143,7 +152,7 @@ def upload_df_as_parquet(service, df, file_name, folder_id):
 
 def get_max_date_from_parquet(service, file_name, folder_id, date_column='Fecha Inicio'):
     """
-    Lee el parquet del histórico limpio y retorna el MAX(date_column) como watermark.
+    Lee el parquet del histrico limpio y retorna el MAX(date_column) como watermark.
     
     This is the key function for incremental loading - it detects the latest date
     in the historical data so we only process newer records.
@@ -161,11 +170,11 @@ def get_max_date_from_parquet(service, file_name, folder_id, date_column='Fecha 
         df = download_parquet_as_df(service, file_name, folder_id)
         
         if df.empty:
-            print(f"⚠️ Archivo {file_name} vacío o no existe. No hay watermark.")
+            print(f"⚠️  Archivo {file_name} vaco o no existe. No hay watermark.")
             return None
         
         if date_column not in df.columns:
-            print(f"❌ Columna '{date_column}' no encontrada en {file_name}")
+            print(f"❌ Error: Columna '{date_column}' no encontrada en {file_name}")
             return None
         
         # Ensure the column is datetime
@@ -174,10 +183,10 @@ def get_max_date_from_parquet(service, file_name, folder_id, date_column='Fecha 
         max_date = df[date_column].max()
         
         if pd.isna(max_date):
-            print(f"⚠️ No se pudo determinar fecha máxima en {file_name}")
+            print(f"⚠️  No se pudo determinar fecha mxima en {file_name}")
             return None
         
-        print(f"📅 Watermark detectado: {max_date}")
+        print(f"✅ Watermark detectado: {max_date}")
         return max_date
         
     except Exception as e:

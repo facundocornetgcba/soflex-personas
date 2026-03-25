@@ -2,10 +2,16 @@
 __pycache__/
 *.py[cod]
 venv/
+.venv/
 .env
+credentials.json
+
 
 # OS
 .DS_Store
 Thumbs.db
 
 credentials.json
+
+# Outputs generados (no versionar binarios grandes)
+*.pbix

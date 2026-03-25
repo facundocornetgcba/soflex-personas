@@ -7,11 +7,42 @@ import os
 from data_processor import get_drive_service, download_parquet_as_df
 
 # --- CONFIGURACION ---
-# ID de la carpeta DB (tomado de main.py)
 FOLDER_ID_DB = '1q7rGJjb3qCTNcyDUYzpn9v4JveLjsk6t'
 FILE_NAME_PARQUET = '2025_historico_limpio.parquet'
 TEMPLATE_HTML_PATH = 'reporte_tablero.html'
 OUTPUT_HTML_PATH = 'reporte_autom_bap.html'
+
+AGENCIAS_EXCLUIR = {
+    "DIPA I COMBATE", "MAPA DE RIESGO - SEGUIMIENTO",
+    "MAPA DE REISGO - SEGUIMIENTO", "DIPA II ZABALA",
+    "AREA OPERATIVA", "SALUD MENTAL",
+}
+
+# --- Categorías para análisis de entrevista / resultado final ---
+_REALIZA_ENTREVISTA_CATS = {
+    "traslado efectivo a cis",
+    "acepta cis pero no hay vacante",
+    "se activa protocolo de salud mental",
+    "derivacion a same",
+    "traslado/acompanamiento a otros efectores",
+    "mendicidad (menores de edad)",
+    "derivacion a centro de nnnya",
+    "se realiza entrevista",
+}
+_DERIVADO_CATS = {
+    "traslado efectivo a cis",
+    "acepta cis pero no hay vacante",
+    "se activa protocolo de salud mental",
+    "derivacion a same",
+    "traslado/acompanamiento a otros efectores",
+    "mendicidad (menores de edad)",
+    "derivacion a centro de nnnya",
+}
+_DNI_INVALIDOS_STR = {
+    "NO BRINDO/NO VISIBLE", "NO BRINDO", "NO VISIBLE", "CONTACTO EXTRANJERO",
+    "S/D", "X", "NAN", "nan", "NaN", "", " ", "NONE", "None",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+}
 
 # =============================================================================
 # LOGICA DE NEGOCIO
@@ -19,13 +50,7 @@ OUTPUT_HTML_PATH = 'reporte_autom_bap.html'
 
 def clasificar_contacto(row):
     """Clasificación estricta de contactos."""
-    no_contacta = [
-        '12–No se contacta y no se observan pertenencias',
-        '11-No se contacta y se observan pertenencias',
-        '16-Desestimado (cartas 911 u otras áreas)'
-    ]
-    
-    if row.get('Estado') == 'PENDIENTE':
+    if row.get('estado') == 'PENDIENTE':
         # Excepcion pedida: Si es comuna 2 o 14, NO devolver 'Sin cubrir' automaticamente
         c_val = row.get('comuna_calculada')
         es_2_or_14 = False
@@ -39,87 +64,163 @@ def clasificar_contacto(row):
         if not es_2_or_14:
             return 'Sin cubrir'
     
-    resultado = row.get('Resultado')
-    if resultado in no_contacta:
+    resultado = str(row.get('resultado', '')).lower()
+    
+    if any(phrase in resultado for phrase in ['no se contacta', 'desestimado']):
         return 'No se contacta'
-    elif resultado == '15-Sin cubrir':
+    elif 'sin cubrir' in resultado:
         return 'Sin cubrir'
     else:
         return 'Se contacta'
 
 def calculate_dni_evolution(df_base, target_comuna_id=2):
-    """
-    Calcula evolución de DNIs para una Comuna dada (Nuevos/Recurrentes/Migratorios).
-    target_comuna_id puede ser int (2, 14, etc).
-    """
+    # Testing match
+    # Step 2: New logic starts here
     COL_FECHA = "Fecha Inicio"
-    COL_DNI = "DNI_Categorizado"
+    COL_DNI = "DNI_categorizado"
     COL_COMUNA = "comuna_calculada"
-    
-    df = df_base.copy()
-    if COL_DNI not in df.columns:
-        df[COL_DNI] = df['Persona DNI']
+    COL_EVO = "Tipo_Evolucion"
 
-    df = df.sort_values(COL_FECHA)
-    df["Semana"] = df[COL_FECHA].dt.to_period("W-SUN").apply(lambda r: r.start_time)
+    # 1. Filtro por Comuna (None = todas las comunas)
+    df = df_base.copy()
+    if target_comuna_id is not None:
+        def is_target_val(x):
+            if pd.isna(x): return False
+            try:
+                val = float(str(x).strip().replace(",", "."))
+                return val == float(target_comuna_id)
+            except:
+                if target_comuna_id == 14.5: return str(x).upper() == "PALERMO NORTE"
+                return False
+        df = df[df[COL_COMUNA].apply(is_target_val)].copy()
+    
+    # 2. Normalizar Tipo_Evolucion
+    if COL_EVO in df.columns:
+        df[COL_EVO] = df[COL_EVO].replace("Nuevo repetido", "Nuevos")
+    else:
+        all_weeks = sorted(df_base[COL_FECHA].dt.to_period("W-SUN").dt.start_time.unique())[-8:]
+        return [{"Semana": d, "recurrentes": 0, "migratorios": 0, "nuevos": 0} for d in all_weeks]
+
+    # 3. Deduplicar DNI por Semana (Despues del filtro de Comuna)
+    df["Semana"] = df[COL_FECHA].dt.to_period("W-SUN").dt.start_time
     df_sem = df.drop_duplicates(subset=["Semana", COL_DNI]).copy()
 
-    def is_target_val(x):
-        if pd.isna(x): return False
-        if isinstance(x, (int, float)): return x == float(target_comuna_id)
-        
-        sx = str(x).upper().replace(" ", "")
-        
-        # Variaciones comunes
-        if target_comuna_id == 2:
-            return sx in {"2", "2.0", "COMUNA2"}
-        elif target_comuna_id == 14.5:
-            return sx in {"Palermo Norte"}
-        else:
-            # Fallback generico
-            return sx in {str(target_comuna_id), f"{target_comuna_id}.0", f"COMUNA{target_comuna_id}"}
+    # 4. Agrupar
+    all_weeks = sorted(df_base[COL_FECHA].dt.to_period("W-SUN").dt.start_time.unique())[-8:]
+    evo_pivot = (
+        df_sem.groupby(["Semana", COL_EVO]).size()
+        .unstack(fill_value=0)
+        .reindex(all_weeks, fill_value=0)
+    )
 
-    semanas = sorted(df_sem["Semana"].unique())
-    dni_last_comuna = {}
-    dni_seen = set()
-    resultados = []
+    for c in ["Recurrentes", "Migratorios", "Nuevos"]:
+        if c not in evo_pivot.columns: evo_pivot[c] = 0
 
-    for semana in semanas:
-        rows_sem = df_sem[df_sem["Semana"] == semana]
-        rows_target = rows_sem[rows_sem[COL_COMUNA].apply(is_target_val)]
-        dnis_target = rows_target[COL_DNI].unique()
-
-        rec_count = 0
-        mig_count = 0
-        nue_count = 0
-
-        for dni in dnis_target:
-            prior_comuna = dni_last_comuna.get(dni, None)
-            if prior_comuna is None and dni not in dni_seen:
-                nue_count += 1
-            else:
-                # Si existia su ultima comuna registrada y ERA la target => Recurrente
-                if prior_comuna is not None and is_target_val(prior_comuna):
-                    rec_count += 1
-                else:
-                    # Si existia pero NO era la target => Migratorio (viene de otro lado)
-                    # O si no tenia prior_comuna pero YA FUE visto (caso borde) => Migratorio interno (??)
-                    # La logica original dice: "if prior_comuna is None and dni not in dni_seen: Nuevo"
-                    # "else: ..." -> aqui entra si tiene prior_comuna OR dni in dni_seen.
-                    mig_count += 1
-        
-        resultados.append({
-            "Semana": semana,
-            "recurrentes": int(rec_count),
-            "migratorios": int(mig_count),
-            "nuevos": int(nue_count)
+    res = []
+    for sem, row in evo_pivot.iterrows():
+        res.append({
+            "Semana": sem,
+            "recurrentes": int(row["Recurrentes"]),
+            "migratorios": int(row["Migratorios"]),
+            "nuevos": int(row["Nuevos"])
         })
+    return res
 
-        for _, r in rows_sem.iterrows():
-            dni_last_comuna[r[COL_DNI]] = r[COL_COMUNA]
-            dni_seen.add(r[COL_DNI])
+def _es_dni_valido(val) -> bool:
+    if val is None:
+        return False
+    s = str(val).strip()
+    if s in _DNI_INVALIDOS_STR or len(s) < 6:
+        return False
+    if len(set(s)) == 1:
+        return False
+    return s.replace(".", "").replace("-", "").isdigit()
 
-    return resultados[-8:]
+
+def _clasificar_entrevista(cat, dni_val) -> str:
+    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
+    if cat_str in _REALIZA_ENTREVISTA_CATS:
+        return "Brinda DNI" if _es_dni_valido(dni_val) else "No brinda"
+    return "No realiza entrevista"
+
+
+def _clasificar_resultado(cat) -> str:
+    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
+    if cat_str in _DERIVADO_CATS:
+        return "Derivado"
+    if cat_str == "rechaza entrevista y se retira del lugar":
+        return "Se retira"
+    if cat_str in {"rechaza entrevista y se queda en el lugar", "se realiza entrevista"}:
+        return "Se queda"
+    if cat_str == "derivacion a espacio publico":
+        return "Espacio público"
+    return "Otros"
+
+
+def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
+    """
+    Para las cartas con nivel_contacto == 'Se contacta', calcula por semana:
+    - Entrevista: Brinda DNI / No brinda / No realiza entrevista  (× Auto y Manual)
+    - Resultado final: Derivado / Se retira / Se queda / Espacio público / Otros (× Auto y Manual)
+    """
+    COL_NIVEL = 'nivel_contacto'
+    COL_CAT   = 'categoria_final'
+    COL_TIPO  = 'Tipo Carta'
+    COL_DNI   = 'DNI_categorizado'
+
+    required = {COL_NIVEL, COL_CAT, COL_TIPO}
+    if not required.issubset(df_base.columns):
+        missing = required - set(df_base.columns)
+        print(f"[WARN] compute_contacto_breakdown: columnas faltantes {missing}")
+        return None
+
+    df_c = df_base[df_base[COL_NIVEL] == 'Se contacta'].copy()
+    df_c = df_c.loc[:, ~df_c.columns.duplicated()].copy()
+
+    all_weeks = sorted(
+        df_base['Fecha Inicio'].dt.to_period('W-SUN').dt.start_time.unique()
+    )[-n_semanas:]
+    weeks_str = [w.strftime('%d %b').replace('.', '').title() for w in all_weeks]
+
+    df_c['Semana'] = df_c['Fecha Inicio'].dt.to_period('W-SUN').dt.start_time
+
+    dni_col = df_c[COL_DNI] if COL_DNI in df_c.columns else pd.Series([''] * len(df_c), index=df_c.index)
+    df_c['_ent_grupo'] = [
+        _clasificar_entrevista(cat, dni)
+        for cat, dni in zip(df_c[COL_CAT], dni_col)
+    ]
+    df_c['_res_grupo'] = df_c[COL_CAT].apply(_clasificar_resultado)
+
+    ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
+    RES_GRUPOS = ["Derivado", "Se retira", "Se queda", "Espacio público", "Otros"]
+
+    result = {'weeks': weeks_str}
+
+    for tipo_carta, key in [('AUTOMATICA', 'auto'), ('MANUAL', 'manual')]:
+        df_tipo = df_c[df_c[COL_TIPO] == tipo_carta]
+
+        ent_counts = {}
+        for g in ENT_GRUPOS:
+            weekly = (
+                df_tipo[df_tipo['_ent_grupo'] == g]
+                .groupby('Semana').size()
+                .reindex(all_weeks, fill_value=0)
+            )
+            ent_counts[g] = [int(v) for v in weekly]
+        result[f'{key}_entrevista'] = ent_counts
+
+        res_counts = {}
+        for g in RES_GRUPOS:
+            weekly = (
+                df_tipo[df_tipo['_res_grupo'] == g]
+                .groupby('Semana').size()
+                .reindex(all_weeks, fill_value=0)
+            )
+            res_counts[g] = [int(v) for v in weekly]
+        result[f'{key}_resultado'] = res_counts
+
+    return result
+
 
 # =============================================================================
 # GENERACION DE HTML INTERACTIVO Y CALCULOS GLOBALES
@@ -153,7 +254,7 @@ def get_stats_data_raw(df_base, comuna_filter_func, base_vals):
 
     df_total_sem = df.groupby('Semana').size().reindex(all_weeks, fill_value=0)
     
-    df_cis = df[df['Resultado'] == '01-Traslado efectivo a CIS']
+    df_cis = df[df['resultado'] == '01-Traslado efectivo a CIS']
     df_cis_sem = df_cis.groupby('Semana').size().reindex(all_weeks, fill_value=0)
 
     df_auto = df[df['Tipo Carta'] == 'AUTOMATICA']
@@ -183,19 +284,55 @@ def get_stats_data_raw(df_base, comuna_filter_func, base_vals):
 
     return {'weeks': weeks_str, 'rows': rows}
 
-def main():
-    print("🚀 Iniciando Generador de Dashboard Interactivo V2 (Fixed)...")
-    
-    service = get_drive_service()
-    print(f"⬇️ Descargando {FILE_NAME_PARQUET}...")
-    df = download_parquet_as_df(service, FILE_NAME_PARQUET, FOLDER_ID_DB)
-    
+def main(df_externo=None):
+    print(" Iniciando Generador de Dashboard Interactivo V2 (Fixed)...")
+
+    if df_externo is not None:
+        print("[INFO] Usando DataFrame externo (sin descarga adicional).")
+        df = df_externo.copy()
+    else:
+        service = get_drive_service()
+        print(f"[DOWNLOAD] Descargando {FILE_NAME_PARQUET}...")
+        df = download_parquet_as_df(service, FILE_NAME_PARQUET, FOLDER_ID_DB)
+
     if df.empty: return
 
-    df['Fecha Inicio'] = pd.to_datetime(df['Fecha Inicio'])
+    # Normalizacin para transicin de nombres (Backward Compatibility)
+    rename_logic = {
+        "Resultado": "resultado",
+        "Estado": "estado",
+        "Agencia": "agencia",
+        "Origen": "origen",
+        "DNI_Categorizado": "DNI_categorizado",
+        "Id Suceso": "id suceso"
+    }
+    df.rename(columns=rename_logic, inplace=True, errors='ignore')
+
+    df['Fecha Inicio'] = pd.to_datetime(df['Fecha Inicio'], errors='coerce')
+    df = df.dropna(subset=['Fecha Inicio'])
     last_update = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    print("📊 Calculando datos para TODAS las comunas...")
+    # --- FILTROS GLOBALES (alineados con reporte_semanal_origen) ---
+
+    # Filtro principal: solo sucesos sin evento asociado
+    id_suceso_col = 'Id Suceso Asociado'
+    if id_suceso_col in df.columns:
+        id_num = pd.to_numeric(df[id_suceso_col], errors='coerce').fillna(0)
+        antes = len(df)
+        df = df[id_num == 0].copy()
+        print(f"[FILTRO] Id Suceso Asociado==0: {len(df):,} / {antes:,} (excluidos: {antes-len(df):,})")
+
+    # Excluir origenes invalidos
+    df = df[~df['origen'].isin(['CORTAN', 'EQUIVOCADO'])].copy()
+
+    # Excluir registros sin categoría válida (igual que reporte_semanal_origen)
+    CATS_EXCLUIR = {"sin_match", "error de soflex"}
+    if 'categoria_final' in df.columns:
+        antes_cat = len(df)
+        df = df[~df['categoria_final'].isin(CATS_EXCLUIR)].copy()
+        print(f"[FILTRO] categoria_final excluidas: {len(df):,} / {antes_cat:,} (excluidos: {antes_cat-len(df):,})")
+
+    print("[STATS] Calculando datos para TODAS las comunas...")
     
     all_data = {}
     
@@ -225,6 +362,13 @@ def main():
             base
         )
     
+    # Palermo Norte (comuna_calculada == 14.5)
+    all_data['palermo_norte'] = get_stats_data_raw(
+        df,
+        lambda d: d[d['comuna_calculada'] == 14.5],
+        base_dummy
+    )
+
     # Total Ciudad (Usando base_total)
     all_data['total'] = get_stats_data_raw(df, lambda d: d, base_total)
 
@@ -238,22 +382,23 @@ def main():
             ]
         }
 
-    print("📈 Calculando evolución DNI Comuna 2...")
-    dni_data_c2 = calculate_dni_evolution(df, target_comuna_id=2)
-    chart_json_c2 = prepare_chart_json(dni_data_c2)
+    print(" Calculando evolucin DNI para todas las comunas...")
+    all_chart_data = {}
+    for _c in range(1, 16):
+        all_chart_data[f'c{_c}'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=_c))
+    all_chart_data['palermo_norte'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
+    all_chart_data['total'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=None))
+    # Alias para referencia de fecha en el header
+    chart_json_c2 = all_chart_data['c2']
 
-    print("📈 Calculando evolución DNI Comuna 14...")
-    dni_data_c14 = calculate_dni_evolution(df, target_comuna_id=14)
-    chart_json_c14 = prepare_chart_json(dni_data_c14)
-
-    print(f"📝 Generando HTML Interactivo...")
+    print(f" Generando HTML Interactivo...")
     
     with open(TEMPLATE_HTML_PATH, 'r', encoding='utf-8') as f:
         html = f.read()
 
     # --- CAMBIOS DE NOMBRE (Refinamiento Final) ---
-    html = html.replace("Red BAP", "Red de Atención")
-    html = html.replace("BAP Personas", "Red de Atención")
+    html = html.replace("Red BAP", "Red de Atencin")
+    html = html.replace("BAP Personas", "Red de Atencin")
 
     # --- LOGO (Base64) ---
     import base64
@@ -268,23 +413,27 @@ def main():
         # Fallback si no encuentra la imagen
         img_tag = '<span class="text-white font-bold text-xl">BA</span>'
 
-    # --- NUEVO HEADER (Diseño Visual) ---
+    # --- NUEVO HEADER (Diseo Visual) ---
     # Reemplazamos todo el bloque <header>...</header> del template original
     new_header = f'''
     <header class="sticky top-0 z-50 flex w-full h-24 bg-[#1E2B37] font-sans shadow-md">
         <!-- Teal Bar Wrapper -->
         <div class="flex-grow bg-gradient-to-r from-[#8BE3D9] to-[#80E0D6] rounded-tr-[3rem] flex mr-4 relative items-center">
-            
+
             <!-- Yellow Section (Tab) -->
-            <div class="bg-ba-yellow h-full w-full lg:w-1/2 rounded-tr-[3rem] px-8 flex items-center justify-between sm:justify-start sm:space-x-8 relative z-10 shadow-sm">
-                 <h1 class="text-xl md:text-2xl font-bold text-ba-grey uppercase tracking-wider leading-tight">
-                    INDICADORES CLAVE - RED DE ATENCIÓN
-                 </h1>
-                 
+            <div class="bg-ba-yellow h-full w-full lg:w-1/2 rounded-tr-[3rem] px-6 flex items-center gap-6 relative z-10 shadow-sm">
+                 <!-- Title block -->
+                 <div class="flex flex-col justify-center min-w-0">
+                     <h1 class="text-sm font-bold text-ba-grey uppercase tracking-wide leading-tight whitespace-nowrap">
+                         INDICADORES CLAVE - RED DE ATENCI&Oacute;N
+                     </h1>
+                     <p class="text-[10px] text-gray-600 font-medium mt-0.5 whitespace-nowrap">Solo sucesos sin evento asociado (suceso asociado = 0)</p>
+                 </div>
+
                  <!-- Vertical Divider & Date -->
-                 <div class="hidden sm:flex items-center space-x-4 border-l border-gray-400 pl-4 h-1/2">
+                 <div class="flex items-center gap-3 border-l border-gray-400 pl-4 h-1/2 shrink-0">
                      <div class="flex flex-col text-xs font-semibold text-gray-800">
-                          <!-- Placeholders que el regex reemplazará abajo -->
+                          <!-- Placeholders que el regex reemplazar abajo -->
                           <div>Actualizado: 01/01/2000 00:00</div>
                           <div class="text-gray-600">Semana: 01 Jan</div>
                      </div>
@@ -323,6 +472,8 @@ def main():
             sel = "selected" if f"c{i}" == default_key else ""
             opts += f'<option value="c{i}" {sel}>Comuna {i}</option>'
         
+        sel_pn = "selected" if default_key == "palermo_norte" else ""
+        opts += f'<option value="palermo_norte" {sel_pn}>Palermo Norte</option>'
         sel_total = "selected" if default_key in ["total", "resto"] else ""
         opts += f'<option value="total" {sel_total}>Total Ciudad</option>'
 
@@ -353,24 +504,21 @@ def main():
         flags=re.DOTALL
     )
 
-    # 3. Gráficos Duales (Comuna 2 y Comuna 14)
-    # Reemplazamos la seccion 2 existente por DOS secciones de graficos.
-    
-    # Helper para crear seccion de grafico
-    def build_chart_section(id_canvas, title):
+    # 3. Grficos Duales (vinculados a Panel Izquierdo y Panel Derecho)
+    def build_chart_section(panel_id, default_label):
         return f'''
         <section class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-            <h2 class="text-xl font-bold text-gray-800 mb-6 border-b pb-2">{title}</h2>
+            <h2 id="chartTitle{panel_id}" class="text-xl font-bold text-gray-800 mb-6 border-b pb-2">Evolucin Semanal de DNI\'s - {default_label}</h2>
             <div class="relative h-96 w-full">
-                <canvas id="{id_canvas}"></canvas>
+                <canvas id="chart{panel_id}"></canvas>
             </div>
         </section>
         '''
-    
+
     charts_html = f'''
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {build_chart_section('dniChart', "Evolución Semanal de DNI's (Operación Comuna 2)")}
-        {build_chart_section('dniChart14', "Evolución Semanal de DNI's (Operación Comuna 14)")}
+        {build_chart_section(1, "Comuna 2")}
+        {build_chart_section(2, "Total Ciudad")}
     </div>
     '''
 
@@ -382,27 +530,33 @@ def main():
         flags=re.DOTALL
     )
 
-    # 4. Lógica JS
+    # 4. Lgica JS
     json_all = json.dumps(all_data)
-    json_chart_c2 = json.dumps(chart_json_c2)
-    json_chart_c14 = json.dumps(chart_json_c14)
+    json_all_charts = json.dumps(all_chart_data)
 
     js_logic = f'''
     <script>
         // DATOS GLOBALES
         const allComunaData = {json_all};
-        const chartDataC2 = {json_chart_c2};
-        const chartDataC14 = {json_chart_c14};
+        const allChartData = {json_all_charts};
+        const chartInstances = {{}};
+
+        // ETIQUETA LEGIBLE POR CLAVE
+        function getComLabel(key) {{
+            if (key === 'total') return 'Total Ciudad';
+            if (key === 'palermo_norte') return 'Palermo Norte';
+            return 'Comuna ' + key.replace('c', '');
+        }}
 
         // RENDER TABLA
         function renderTable(containerId, key) {{
             const data = allComunaData[key];
             if (!data) return;
             const container = document.getElementById(containerId);
-            
-            let ths = '<th class="p-3 text-left">Indicadores</th><th class="p-3 w-20 bg-teal-800">Línea Base</th>';
+
+            let ths = '<th class="p-3 text-left">Indicadores</th><th class="p-3 w-20 bg-teal-800">Lnea Base</th>';
             data.weeks.forEach(w => ths += `<th class="p-3 w-24">${{w}}</th>`);
-            
+
             let trs = '';
             data.rows.forEach((r, idx) => {{
                 let tds = '';
@@ -416,21 +570,35 @@ def main():
             }});
 
             container.innerHTML = `<table class="w-full text-sm text-center"><thead><tr class="bg-teal-700 text-white">${{ths}}</tr></thead><tbody class="divide-y divide-gray-200">${{trs}}</tbody></table>`;
+
+            // Actualizar grfico vinculado al panel
+            const panelId = containerId === 'table1' ? 1 : 2;
+            updateChart(panelId, key);
         }}
 
-        renderTable('table1', 'c2');
-        renderTable('table2', 'total');
+        // ACTUALIZAR GRFICO
+        function updateChart(panelId, key) {{
+            const data = allChartData[key];
+            if (!data) return;
 
-        // FUNCIÓN CHART GENERICA
-        function initChart(canvasId, dataJson) {{
-            const ctx = document.getElementById(canvasId).getContext('2d');
+            // Actualizar ttulo
+            const titleEl = document.getElementById('chartTitle' + panelId);
+            if (titleEl) titleEl.textContent = "Evolucin Semanal de DNI's - " + getComLabel(key);
+
+            // Destruir instancia anterior si existe
+            if (chartInstances[panelId]) {{
+                chartInstances[panelId].destroy();
+                delete chartInstances[panelId];
+            }}
+
             if (typeof ChartDataLabels !== 'undefined') {{
                 Chart.register(ChartDataLabels);
             }}
 
-            new Chart(ctx, {{
+            const ctx = document.getElementById('chart' + panelId).getContext('2d');
+            chartInstances[panelId] = new Chart(ctx, {{
                 type: 'bar',
-                data: dataJson,
+                data: data,
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
@@ -470,8 +638,9 @@ def main():
             }});
         }}
 
-        initChart('dniChart', chartDataC2);
-        initChart('dniChart14', chartDataC14);
+        // INICIALIZACIN
+        renderTable('table1', 'c2');
+        renderTable('table2', 'total');
 
     </script>
     '''
@@ -488,7 +657,7 @@ def main():
     with open(OUTPUT_HTML_PATH, 'w', encoding='utf-8') as f:
         f.write(html)
     
-    print("✅ Dashboard Interactivo generado.")
+    print("[OK] Dashboard Interactivo generado.")
 
 if __name__ == '__main__':
     main()

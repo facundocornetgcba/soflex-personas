@@ -1,36 +1,114 @@
-import os
+#!/usr/bin/env python3
+"""
+main.py  -  ETL incremental semanal
+Corre cada semana (manualmente o via GitHub Actions).
+
+Flujo:
+  1. Busca el Excel ms reciente en la carpeta 01_insumos de Drive
+  2. Detecta el watermark (fecha mxima en Neon)
+  3. Filtra solo registros nuevos y los procesa
+  4. Append a Neon + actualiza parquet backup en Drive
+"""
+
+from core.db_connections import get_max_date_from_neon, get_table_stats, get_neon_engine
+from core.drive_manager   import (
+    download_file_as_bytes, get_drive_service,
+    download_parquet_as_df, upload_df_as_parquet, get_max_date_from_parquet,
+)
+from data_processor        import procesar_datos
+
 import sys
-# Importar funciones desde los módulos refactorizados
-from core.drive_manager import get_drive_service, download_file_as_bytes, get_max_date_from_parquet
-from core.db_connections import get_table_stats, get_max_date_from_neon
-from data_processor import procesar_datos
-
-# --- CONFIGURACIÓN DE CARPETAS (IDs ACTUALIZADOS) ---
-
-# 1. CARPETA DE ENTRADA (01_insumos): Donde están tus .xls semanales
-# TEMPORALMENTE DESHABILITADO: Ya no se busca el Excel en Drive/Gmail
-# INPUT_FOLDER_ID = '14kWGqDj-Q_TOl2-F9FqocI9H_SeL_6Ba' 
-
-# 2. CARPETA DE BASE DE DATOS (02_base_datos): Donde vive el parquet y el histórico
-DB_FOLDER_ID = '1q7rGJjb3qCTNcyDUYzpn9v4JveLjsk6t'
-
-# --- CARGA LOCAL TEMPORAL ---
-# El archivo Excel debe estar en la misma carpeta que este script
-LOCAL_EXCEL_FILENAME = "febrero1.xlsx"  # Cambia el nombre según tu archivo
-
-def main():
-    print("🏁 Iniciando proceso de captura (Master Flow: Drive Parquet -> Neon)...")
-    
-    # 1. Autenticación con Google Drive
+if sys.stdout.encoding != 'utf-8':
     try:
-        service = get_drive_service()
-    except Exception as e:
-        print(f"❌ Error de autenticación: {e}")
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Fallback if reconfigure is not available
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+#  Configuracion 
+
+INPUT_FOLDER_ID = "14kWGqDj-Q_TOl2-F9FqocI9H_SeL_6Ba"  # 01_insumos
+DB_FOLDER_ID    = "1q7rGJjb3qCTNcyDUYzpn9v4JveLjsk6t"  # 02_base_datos
+TABLE_NEON      = "historico_limpio"
+COL_FECHA       = "Fecha Inicio"
+
+
+FILE_PARQUET = "2025_historico_limpio.parquet"
+
+
+def _sincronizar_parquet_desde_neon(service, parquet_max, folder_id):
+    """
+    Descarga desde Neon los registros posteriores a parquet_max
+    y los appendea al parquet de Drive.
+    Solo se llama cuando Neon tiene datos más recientes que el parquet.
+    """
+    import pandas as pd
+
+    print(f"\n⚠️  Parquet desincronizado (max: {parquet_max}). Sincronizando desde Neon...")
+    engine = get_neon_engine()
+    try:
+        q = f"""
+            SELECT * FROM historico_limpio
+            WHERE "Fecha Inicio" > :fecha
+            ORDER BY "Fecha Inicio"
+        """
+        from sqlalchemy import text as sa_text
+        with engine.connect() as conn:
+            df_delta = pd.read_sql(sa_text(q), conn, params={"fecha": parquet_max})
+    except Exception as exc:
+        print(f"   ❌ Error consultando Neon para sync: {exc}")
+        return
+    finally:
+        engine.dispose()
+
+    if df_delta.empty:
+        print("   ✅ Neon no tiene datos adicionales. Parquet ya sincronizado.")
         return
 
-    # 2. Búsqueda del Excel en la carpeta de Drive (01_insumos)
-    INPUT_FOLDER_ID = '14kWGqDj-Q_TOl2-F9FqocI9H_SeL_6Ba' 
-    print(f"🔎 Buscando reportes en Drive: {INPUT_FOLDER_ID}...")
+    print(f"   📥 {len(df_delta):,} registros a appendear al parquet...")
+    df_prev = download_parquet_as_df(service, FILE_PARQUET, folder_id)
+    if df_prev is not None and not df_prev.empty:
+        df_prev["Fecha Inicio"] = pd.to_datetime(df_prev["Fecha Inicio"], errors="coerce")
+        # Alinear dtypes del delta con el parquet existente para evitar conflictos en concat
+        for col in df_prev.columns:
+            if col not in df_delta.columns:
+                continue
+            try:
+                if pd.api.types.is_datetime64_any_dtype(df_prev[col].dtype):
+                    df_delta[col] = pd.to_datetime(df_delta[col], errors="coerce")
+                elif pd.api.types.is_integer_dtype(df_prev[col].dtype):
+                    df_delta[col] = pd.to_numeric(df_delta[col], errors="coerce").astype("Int64")
+                elif pd.api.types.is_float_dtype(df_prev[col].dtype):
+                    df_delta[col] = pd.to_numeric(df_delta[col], errors="coerce")
+                else:
+                    df_delta[col] = df_delta[col].astype(df_prev[col].dtype)
+            except Exception:
+                pass
+        df_completo = pd.concat([df_prev, df_delta], ignore_index=True)
+    else:
+        df_completo = df_delta
+
+    upload_df_as_parquet(service, df_completo, FILE_PARQUET, folder_id)
+    print(f"   ✅ Parquet sincronizado: {len(df_completo):,} registros totales.")
+
+
+def main():
+    print("=" * 60)
+    print("  ETL Incremental Semanal")
+    print("=" * 60)
+
+    # 1. Autenticacion Drive
+    print("\n🔑 Autenticando con Google Drive...")
+    try:
+        service = get_drive_service()
+        print("   ✅ OK")
+    except Exception as exc:
+        print(f"   ❌ Error: {exc}")
+        raise
+
+    # 2. Buscar Excel ms reciente en 01_insumos
+    print(f"\n🔎 Buscando Excel en 01_insumos...")
     query = (
         f"'{INPUT_FOLDER_ID}' in parents "
         "and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' "
@@ -38,47 +116,68 @@ def main():
         "and trashed = false"
     )
     results = service.files().list(
-        q=query, 
-        orderBy='createdTime desc', 
-        pageSize=1, 
-        fields="files(id, name, createdTime)"
+        q=query,
+        orderBy="createdTime desc",
+        pageSize=1,
+        fields="files(id, name, createdTime)",
     ).execute()
-    files = results.get('files', [])
-    
-    if not files:
-        print("⚠️ No se encontró ningún archivo Excel en '01_insumos'.")
-        return
-        
-    archivo_excel = files[0]
-    print(f"📄 Archivo detectado: {archivo_excel['name']} (ID: {archivo_excel['id']})")
 
-    # 3. Descarga del Excel desde Drive a memoria
+    archivos = results.get("files", [])
+    if not archivos:
+        print("   ⚠️  No se encontro ningun Excel en 01_insumos.")
+        print("      Sub el archivo y volv a correr.")
+        return
+
+    archivo = archivos[0]
+    print(f"   📄 {archivo['name']}  (subido: {archivo['createdTime']})")
+
+    # 3. Descargar Excel a memoria
+    print("\n⬇️  Descargando Excel...")
     try:
-        excel_bytes = download_file_as_bytes(service, archivo_excel['id'])
-        print("✅ Descarga del Excel completada.")
-    except Exception as e:
-        print(f"❌ Error descargando archivo: {e}")
-        return
+        excel_bytes = download_file_as_bytes(service, archivo["id"])
+        print("   ✅ OK")
+    except Exception as exc:
+        print(f"   ❌ Error: {exc}")
+        raise
 
-    # 4. Detectar watermark desde Parquet (Diagram Step 1)
-    # FILE_NAME_PARQUET = '2025_historico_limpio.parquet'
-    DB_FOLDER_ID = '1q7rGJjb3qCTNcyDUYzpn9v4JveLjsk6t'
-    print(f"\n🔍 1. Detectando watermark desde Parquet en Drive...")
-    watermark = get_max_date_from_parquet(service, "2025_historico_limpio.parquet", DB_FOLDER_ID)
-    
+    # 4. Watermark desde Neon
+    print(f"\n🔍 Watermark en Neon ({TABLE_NEON})...")
+    watermark = get_max_date_from_neon(TABLE_NEON, COL_FECHA)
+
     if watermark:
-        print(f"✅ Watermark detectado: {watermark}")
+        print(f"   ✅ {watermark}  ->  solo registros posteriores a esta fecha")
     else:
-        print("⚠️ No se detectó watermark. Se procesará todo.")
+        print("   ⚠️  Tabla vaca -> se procesa todo (primera carga)")
 
-    # 5. Enviar al Procesador (Diagram Step 2)
+    # Info actual de Neon (informativo, no bloquea el ETL)
     try:
-        print(f"\n🚀 2. Enviando a data_processor.py con watermark: {watermark}")
-        procesar_datos(excel_bytes, DB_FOLDER_ID, watermark=watermark)
-        print("\n🚀 Ciclo completo finalizado exitosamente.")
-    except Exception as e:
-        print(f"❌ Error durante el procesamiento: {e}")
-        raise e
+        stats = get_table_stats(TABLE_NEON)
+        if stats:
+            print(f"\n📊 Neon actual: {stats['total_records']:,} registros  "
+                  f"({stats['min_fecha']} -> {stats['max_fecha']})")
+    except Exception:
+        pass  # No crtico: sigue adelante aunque no se puedan obtener stats
 
-if __name__ == '__main__':
+    # 5. ETL incremental
+    print()
+    try:
+        resultado = procesar_datos(excel_bytes, DB_FOLDER_ID, watermark=watermark)
+    except Exception as exc:
+        print(f"\n❌ Error en el procesamiento: {exc}")
+        raise
+
+    if resultado is None:
+        print("\n✅ Sin datos nuevos. Neon no fue modificado.")
+        # Verificar si el parquet quedó desincronizado de una corrida anterior fallida
+        if watermark:
+            parquet_max = get_max_date_from_parquet(service, FILE_PARQUET, DB_FOLDER_ID)
+            if parquet_max is None or parquet_max < watermark:
+                _sincronizar_parquet_desde_neon(service, parquet_max, DB_FOLDER_ID)
+            else:
+                print("✅ Parquet ya sincronizado con Neon.")
+    else:
+        print(f"\n✅ {len(resultado):,} registros nuevos cargados en Neon.")
+
+
+if __name__ == "__main__":
     main()
