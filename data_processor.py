@@ -662,31 +662,31 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
 
     print(f"[OK] Registros nuevos a procesar: {len(df):,}")
 
-    #  Fase 0b: Backup Crudo (Incremental) 
+    #  Fase 0b: Backup Crudo (Incremental) — TEMPORALMENTE DESACTIVADO
     # Guardamos los datos tal cual vienen del Excel (post-watermark) en 2025_historico_v2.parquet
-    print(f"\n[DIR] Actualizando backup CRUDO ({FILE_RAW})...")
-    service_raw = get_drive_service()
-    try:
-        df_raw_prev = download_parquet_as_df(service_raw, FILE_RAW, folder_id)
-        if df_raw_prev is not None and not df_raw_prev.empty:
-            # Asegurar dtypes compatibles para el concat
-            for col in df_raw_prev.columns:
-                if col in df.columns:
-                    try:
-                        df[col] = df[col].astype(df_raw_prev[col].dtype)
-                    except:
-                        pass
-            df_raw_completo = pd.concat([df_raw_prev, df], ignore_index=True)
-            print(f"   Prev: {len(df_raw_prev):,} + Nuevo: {len(df):,} = Total Raw: {len(df_raw_completo):,}")
-        else:
-            df_raw_completo = df
-            print("   Parquet crudo previo vacio - creando desde cero.")
-        
-        upload_df_as_parquet(service_raw, df_raw_completo, FILE_RAW, folder_id)
-        print("   ✅ Parquet crudo actualizado en Drive")
-        del df_raw_prev, df_raw_completo; gc.collect()
-    except Exception as exc:
-        print(f"   ⚠️  Error actualizando backup CRUDO: {exc}")
+    # print(f"\n[DIR] Actualizando backup CRUDO ({FILE_RAW})...")
+    # service_raw = get_drive_service()
+    # try:
+    #     df_raw_prev = download_parquet_as_df(service_raw, FILE_RAW, folder_id)
+    #     if df_raw_prev is not None and not df_raw_prev.empty:
+    #         # Asegurar dtypes compatibles para el concat
+    #         for col in df_raw_prev.columns:
+    #             if col in df.columns:
+    #                 try:
+    #                     df[col] = df[col].astype(df_raw_prev[col].dtype)
+    #                 except:
+    #                     pass
+    #         df_raw_completo = pd.concat([df_raw_prev, df], ignore_index=True)
+    #         print(f"   Prev: {len(df_raw_prev):,} + Nuevo: {len(df):,} = Total Raw: {len(df_raw_completo):,}")
+    #     else:
+    #         df_raw_completo = df
+    #         print("   Parquet crudo previo vacio - creando desde cero.")
+    #     upload_df_as_parquet(service_raw, df_raw_completo, FILE_RAW, folder_id)
+    #     print("   ✅ Parquet crudo actualizado en Drive")
+    #     del df_raw_prev, df_raw_completo; gc.collect()
+    # except Exception as exc:
+    #     print(f"   ⚠️  Error actualizando backup CRUDO: {exc}")
+    print("\n[DIR] Backup CRUDO omitido temporalmente.")
 
     # Normalizacin bsica de texto antes del geo
     cols_obj = df.select_dtypes(include=["object"]).columns

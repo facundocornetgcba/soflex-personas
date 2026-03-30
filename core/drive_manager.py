@@ -20,9 +20,13 @@ if sys.stdout.encoding != 'utf-8':
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+import httplib2
+import google_auth_httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+
+DRIVE_TIMEOUT = 120  # segundos máximo por operación HTTP con Drive
 
 
 # Scopes for Google Drive
@@ -56,12 +60,16 @@ def get_credentials():
 def get_drive_service():
     """
     Autentica y devuelve el servicio de Drive usando las credenciales compartidas.
-    
+    Usa un HTTP client con timeout para evitar que se cuelgue indefinidamente.
+
     Returns:
         googleapiclient.discovery.Resource: Authenticated Drive service
     """
     creds = get_credentials()
-    return build('drive', 'v3', credentials=creds)
+    http = google_auth_httplib2.AuthorizedHttp(
+        creds, http=httplib2.Http(timeout=DRIVE_TIMEOUT)
+    )
+    return build('drive', 'v3', http=http)
 
 
 def download_file_as_bytes(service, file_id):
@@ -100,21 +108,23 @@ def download_parquet_as_df(service, file_name, folder_id):
     """
     print(f"🔎 Buscando '{file_name}' en Drive...")
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)").execute()
+    results = service.files().list(q=query, fields="files(id)").execute(num_retries=3)
     files = results.get('files', [])
-    
+
     if not files:
-        print(f"⚠️  Archivo {file_name} no encontrado. Se crear uno nuevo.")
-        return pd.DataFrame() 
+        print(f"⚠️  Archivo {file_name} no encontrado. Se creará uno nuevo.")
+        return pd.DataFrame()
 
     file_id = files[0]['id']
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request, chunksize=10 * 1024 * 1024)  # 10 MB por chunk
     done = False
-    while done is False:
-        status, done = downloader.next_chunk()
-    
+    while not done:
+        status, done = downloader.next_chunk(num_retries=3)
+        if status:
+            print(f"   ⬇️  {file_name}: {int(status.progress() * 100)}%")
+
     fh.seek(0)
     return pd.read_parquet(fh)
 
@@ -137,16 +147,16 @@ def upload_df_as_parquet(service, df, file_name, folder_id):
     media = MediaIoBaseUpload(fh, mimetype='application/octet-stream', resumable=True)
     
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)").execute()
+    results = service.files().list(q=query, fields="files(id)").execute(num_retries=3)
     files = results.get('files', [])
 
     if files:
         file_id = files[0]['id']
-        service.files().update(fileId=file_id, media_body=media).execute()
+        service.files().update(fileId=file_id, media_body=media).execute(num_retries=3)
         print(f"✅ {file_name} actualizado en Drive.")
     else:
         file_metadata = {'name': file_name, 'parents': [folder_id]}
-        service.files().create(body=file_metadata, media_body=media).execute()
+        service.files().create(body=file_metadata, media_body=media).execute(num_retries=3)
         print(f"✅ {file_name} creado en Drive.")
 
 
