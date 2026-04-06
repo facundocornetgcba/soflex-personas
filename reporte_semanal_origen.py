@@ -926,7 +926,7 @@ const CHART_KEYS = {{
 }};
 
 const ENT_COLORS = ['#10B981', '#3B82F6', '#F97316'];
-const RES_COLORS = ['#8B5CF6', '#EF4444', '#F59E0B', '#DC2626', '#F97316', '#06B6D4', '#9CA3AF'];
+const RES_COLORS = ['#8B5CF6', '#10B981', '#F59E0B', '#EF4444', '#F97316', '#06B6D4', '#9CA3AF'];
 
 function initContactoChart(canvasId, countsByGroup, colors) {{
   const el = document.getElementById(canvasId);
@@ -949,7 +949,7 @@ function initContactoChart(canvasId, countsByGroup, colors) {{
         tooltip: {{ mode: 'index', intersect: false }},
         datalabels: {{
           color: 'white', font: {{ weight: 'bold', size: 10 }},
-          formatter: v => v > 0 ? v : ''
+          formatter: v => v >= 3 ? v : ''
         }}
       }}
     }},
