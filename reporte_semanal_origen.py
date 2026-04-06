@@ -85,12 +85,18 @@ _REALIZA_ENTREVISTA_CATS = {
     "derivacion a centro de nnnya",
     "se realiza entrevista",
 }
-_DERIVADO_CATS = {
+_SE_DERIVA_CATS = {
     "traslado efectivo a cis",
     "acepta cis pero no hay vacante",
-    "se activa protocolo de salud mental",
-    "derivacion a same",
     "traslado/acompanamiento a otros efectores",
+}
+_CASOS_SALUD_CATS = {
+    "derivacion a same",
+    "se activa protocolo de salud mental",
+    "imposibilidad de abordaje por consumo",
+}
+_NO_PSC_CATS = {
+    "no se encuentra en situacion de calle",
     "mendicidad (menores de edad)",
     "derivacion a centro de nnnya",
 }
@@ -156,15 +162,19 @@ def _clasificar_entrevista(cat, dni_val) -> str:
 
 def _clasificar_resultado(cat) -> str:
     cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
-    if cat_str in _DERIVADO_CATS:
-        return "Derivado"
+    if cat_str in _SE_DERIVA_CATS:
+        return "Se deriva"
+    if cat_str in _CASOS_SALUD_CATS:
+        return "Casos de salud"
+    if cat_str in _NO_PSC_CATS:
+        return "No eran PSC"
     if cat_str == "rechaza entrevista y se retira del lugar":
         return "Se retira"
     if cat_str in {"rechaza entrevista y se queda en el lugar", "se realiza entrevista"}:
         return "Se queda"
     if cat_str == "derivacion a espacio publico":
         return "Espacio público"
-    return "Otros"
+    return "Cierres no identificables"
 
 
 # ── Preparación del DataFrame ──────────────────────────────────────────────────
@@ -356,7 +366,7 @@ def compute_contacto_breakdown_weekly(df: pd.DataFrame, global_weeks: list) -> d
     if df_c.empty:
         ENT = {"Brinda DNI": [0]*len(global_weeks), "No brinda": [0]*len(global_weeks),
                "No realiza entrevista": [0]*len(global_weeks)}
-        RES = {g: [0]*len(global_weeks) for g in ["Derivado", "Se retira", "Se queda", "Espacio público", "Otros"]}
+        RES = {g: [0]*len(global_weeks) for g in ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"]}
         return {"weeks": weeks_str,
                 "auto_entrevista": ENT, "manual_entrevista": dict(ENT),
                 "auto_resultado": RES, "manual_resultado": dict(RES)}
@@ -367,7 +377,7 @@ def compute_contacto_breakdown_weekly(df: pd.DataFrame, global_weeks: list) -> d
     df_c["_res"] = df_c[COL_CAT].apply(_clasificar_resultado)
 
     ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["Derivado", "Se retira", "Se queda", "Espacio público", "Otros"]
+    RES_GRUPOS = ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"]
 
     result = {"weeks": weeks_str}
 
@@ -916,7 +926,7 @@ const CHART_KEYS = {{
 }};
 
 const ENT_COLORS = ['#10B981', '#3B82F6', '#F97316'];
-const RES_COLORS = ['#8B5CF6', '#EF4444', '#F59E0B', '#06B6D4', '#9CA3AF'];
+const RES_COLORS = ['#8B5CF6', '#EF4444', '#F59E0B', '#DC2626', '#F97316', '#06B6D4', '#9CA3AF'];
 
 function initContactoChart(canvasId, countsByGroup, colors) {{
   const el = document.getElementById(canvasId);
@@ -1065,7 +1075,7 @@ function renderEntrevistaTable(key) {{
 }}
 
 // ── Tabla resultado ───────────────────────────────────────────────────────────
-const RES_GRUPOS = ["Derivado", "Se retira", "Se queda", "Espacio público", "Otros"];
+const RES_GRUPOS = ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"];
 const resTblWrap = document.getElementById('resultado-tbl-wrap');
 
 resTblWrap.addEventListener('click', e => {{
