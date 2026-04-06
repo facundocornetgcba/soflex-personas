@@ -65,6 +65,34 @@ GRUPO_ORDEN = [
     "Vecino / ONG / PST",
 ]
 
+ORIGEN_A_GRUPO_MANUAL: dict[str, str] = {
+    "MONITOREO 108":                         "Llamados 108",
+    "BOTI":                                  "Llamados 108",
+    "VECINO":                                "Llamados 108",
+    "CAJEROS":                               "Llamados 108",
+    "SIN TECHO":                             "Llamados 108",
+    "ONG":                                   "Llamados 108",
+    "GESTION COLABORATIVA":                  "BA Colaborativa / 911",
+    "911":                                   "BA Colaborativa / 911",
+    "SUBTE":                                 "BA Colaborativa / 911",
+    "JUDICIALES":                            "BA Colaborativa / 911",
+    "ESPACIOS PUBLICOS":                     "BA Colaborativa / 911",
+    "ORGANISMOS PUBLICOS":                   "BA Colaborativa / 911",
+    "DESDE BAP/MDR":                         "BA Colaborativa / 911",
+    "PUNTO POLITICO/INGRESO POR FUERA 108":  "Casos particulares",
+    "SEGUIMIENTO":                           "Casos particulares",
+    "NIÑA/NIÑO":                             "Casos particulares",
+    "ADICCIONES":                            "Casos particulares",
+    "ESPONTANEO":                            "Espontáneas",
+}
+
+GRUPO_MANUAL_ORDEN = [
+    "Llamados 108",
+    "BA Colaborativa / 911",
+    "Casos particulares",
+    "Espontáneas",
+]
+
 NIVEL_ORDEN = [
     "Se contacta",
     "No se contacta",
@@ -115,6 +143,13 @@ def mapear_origen(valor) -> str:
     if s in ORIGEN_EXCLUIR:
         return "__excluir__"
     return ORIGEN_A_GRUPO.get(s, f"Otro ({str(valor).strip()})")
+
+
+def mapear_grupo_manual(valor) -> str:
+    if pd.isna(valor):
+        return "Otros"
+    s = str(valor).strip().upper()
+    return ORIGEN_A_GRUPO_MANUAL.get(s, "Otros")
 
 
 def nivel_display(nivel_contacto_val, categoria_final_val) -> str:
@@ -192,6 +227,7 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     df["grupo_origen"] = df["Origen"].apply(mapear_origen)
     df = df[df["grupo_origen"] != "__excluir__"].copy()
+    df["grupo_manual"] = df["Origen"].apply(mapear_grupo_manual)
 
     # Excluir registros sin categoría válida (sin_match y error de soflex)
     CATS_EXCLUIR = {"sin_match", "error de soflex"}
@@ -277,16 +313,21 @@ def build_row_structure(df: pd.DataFrame) -> list:
     for nivel in NIVEL_ORDEN:
         if not (mask_manual & (df["nivel_norm"] == nivel)).any():
             continue
-        niv_ridx = len(rows)
         rows.append({"label": nivel, "indent": 2, "type": "manual_nivel",
                      "key": ("manual_nivel", nivel), "parent_ridx": manual_ridx})
-        if nivel == "No se contacta":
-            mask_nsc = mask_manual & (df["nivel_norm"] == nivel)
-            for grupo in GRUPO_ORDEN:
-                if not (mask_nsc & (df["grupo_origen"] == grupo)).any():
-                    continue
-                rows.append({"label": grupo, "indent": 3, "type": "manual_nsc_origen",
-                             "key": ("manual_nsc_origen", grupo), "parent_ridx": niv_ridx})
+
+    for grupo in GRUPO_MANUAL_ORDEN:
+        mask_g = mask_manual & (df["grupo_manual"] == grupo)
+        if not mask_g.any():
+            continue
+        grupo_ridx = len(rows)
+        rows.append({"label": grupo, "indent": 2, "type": "manual_grupo",
+                     "key": ("manual_grupo", grupo), "parent_ridx": manual_ridx})
+        for nivel in NIVEL_ORDEN:
+            if not (mask_g & (df["nivel_norm"] == nivel)).any():
+                continue
+            rows.append({"label": nivel, "indent": 3, "type": "manual_grupo_nivel",
+                         "key": ("manual_grupo_nivel", grupo, nivel), "parent_ridx": grupo_ridx})
 
     return rows
 
@@ -319,9 +360,12 @@ def compute_vals_for_df(df_sub: pd.DataFrame, row_structure: list, semanas) -> l
         elif k[0] == "manual_nivel":
             _, nivel = k
             mask = mask_manual & (df_sub["nivel_norm"] == nivel)
-        else:  # manual_nsc_origen
+        elif k[0] == "manual_grupo":
             _, grupo = k
-            mask = mask_manual & (df_sub["nivel_norm"] == "No se contacta") & (df_sub["grupo_origen"] == grupo)
+            mask = mask_manual & (df_sub["grupo_manual"] == grupo)
+        else:  # manual_grupo_nivel
+            _, grupo, nivel = k
+            mask = mask_manual & (df_sub["grupo_manual"] == grupo) & (df_sub["nivel_norm"] == nivel)
         result.append(counts_by_semana(df_sub, mask, semanas))
     return result
 
@@ -441,7 +485,8 @@ def generar_html(row_structure: list, all_data: dict,
         "grupo":             "r-grupo",
         "nivel":             "r-nivel",
         "manual_nivel":      "r-manual-nivel",
-        "manual_nsc_origen": "r-manual-nsc-origen",
+        "manual_grupo":      "r-manual-grupo",
+        "manual_grupo_nivel":"r-manual-grupo-nivel",
     }
     PAD = {0: 10, 1: 22, 2: 36, 3: 52}
 
@@ -620,8 +665,9 @@ tr.r-sub-manual td{{background:#1E3669;color:#BAD4F8;font-weight:700;font-size:1
 /* Niveles dentro de Manuales */
 tr.r-manual-nivel      td{{background:#2A4F96;color:#93C5FD;font-size:11.5px;font-style:italic}}
 /* Origen dentro de No se contacta */
-tr.r-manual-nsc-origen td{{background:#EEF2FF;color:#1E3669;font-size:11.5px}}
-tr.r-manual-nsc-origen:nth-child(even) td{{background:#E0E7FF}}
+tr.r-manual-grupo      td{{background:#2E5FAA;color:#DBEAFE;font-weight:600;font-size:12px}}
+tr.r-manual-grupo-nivel td{{background:#EEF2FF;color:#1E3669;font-size:11.5px}}
+tr.r-manual-grupo-nivel:nth-child(even) td{{background:#E0E7FF}}
 
 tr:not(.r-total):hover td{{filter:brightness(.94)}}
 
@@ -635,7 +681,8 @@ tr.r-grupo             td.vc{{color:#ECFDF5;font-weight:600}}
 tr.r-nivel             td.vc{{color:#2D6B55}}
 tr.r-sub-manual        td.vc{{color:#BAD4F8;font-weight:700}}
 tr.r-manual-nivel      td.vc{{color:#93C5FD}}
-tr.r-manual-nsc-origen td.vc{{color:#2A4F96}}
+tr.r-manual-grupo      td.vc{{color:#DBEAFE;font-weight:600}}
+tr.r-manual-grupo-nivel td.vc{{color:#2A4F96}}
 .pct{{font-size:.82em;opacity:.68;margin-left:2px}}
 
 /* Columnas ocultas por filtro de fecha */
