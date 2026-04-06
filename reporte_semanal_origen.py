@@ -277,57 +277,24 @@ def build_row_structure(df: pd.DataFrame) -> list:
     rows.append({"label": "Intervenciones totales", "indent": 0, "type": "total",
                  "key": ("total",), "parent_ridx": None})
 
-    rows.append({"label": "Automáticas", "indent": 1, "type": "subtotal",
-                 "key": ("auto",), "parent_ridx": 0})
-    auto_ridx = len(rows) - 1
-
-    mask_auto = df["tipo_carta_norm"] == "AUTOMATICA"
-
-    # Totales de nivel para todas las automáticas
     for nivel in NIVEL_ORDEN:
-        if not (mask_auto & (df["nivel_norm"] == nivel)).any():
+        if not (df["nivel_norm"] == nivel).any():
             continue
-        rows.append({"label": nivel, "indent": 2, "type": "auto_nivel",
-                     "key": ("auto_nivel", nivel), "parent_ridx": auto_ridx})
-
-    # Desglose por grupo de origen
-    for grupo in GRUPO_ORDEN:
-        mask_g = mask_auto & (df["grupo_origen"] == grupo)
-        if not mask_g.any():
-            continue
-        grupo_ridx = len(rows)
-        rows.append({"label": grupo, "indent": 2, "type": "grupo",
-                     "key": ("grupo", grupo), "parent_ridx": auto_ridx})
-        for nivel in NIVEL_ORDEN:
-            if not (mask_g & (df["nivel_norm"] == nivel)).any():
-                continue
-            rows.append({"label": nivel, "indent": 3, "type": "nivel",
-                         "key": ("nivel", grupo, nivel), "parent_ridx": grupo_ridx})
-
-    rows.append({"label": "Manuales", "indent": 1, "type": "subtotal_manual",
-                 "key": ("manual",), "parent_ridx": 0})
-    manual_ridx = len(rows) - 1
-
-    mask_manual = df["tipo_carta_norm"] != "AUTOMATICA"
-
-    for nivel in NIVEL_ORDEN:
-        if not (mask_manual & (df["nivel_norm"] == nivel)).any():
-            continue
-        rows.append({"label": nivel, "indent": 2, "type": "manual_nivel",
-                     "key": ("manual_nivel", nivel), "parent_ridx": manual_ridx})
+        rows.append({"label": nivel, "indent": 1, "type": "total_nivel",
+                     "key": ("total_nivel", nivel), "parent_ridx": 0})
 
     for grupo in GRUPO_MANUAL_ORDEN:
-        mask_g = mask_manual & (df["grupo_manual"] == grupo)
+        mask_g = df["grupo_manual"] == grupo
         if not mask_g.any():
             continue
         grupo_ridx = len(rows)
-        rows.append({"label": grupo, "indent": 2, "type": "manual_grupo",
-                     "key": ("manual_grupo", grupo), "parent_ridx": manual_ridx})
+        rows.append({"label": grupo, "indent": 1, "type": "grupo_origen",
+                     "key": ("grupo_origen", grupo), "parent_ridx": 0})
         for nivel in NIVEL_ORDEN:
             if not (mask_g & (df["nivel_norm"] == nivel)).any():
                 continue
-            rows.append({"label": nivel, "indent": 3, "type": "manual_grupo_nivel",
-                         "key": ("manual_grupo_nivel", grupo, nivel), "parent_ridx": grupo_ridx})
+            rows.append({"label": nivel, "indent": 2, "type": "grupo_origen_nivel",
+                         "key": ("grupo_origen_nivel", grupo, nivel), "parent_ridx": grupo_ridx})
 
     return rows
 
@@ -335,37 +302,22 @@ def build_row_structure(df: pd.DataFrame) -> list:
 # ── Cómputo de valores ─────────────────────────────────────────────────────────
 
 def compute_vals_for_df(df_sub: pd.DataFrame, row_structure: list, semanas) -> list[list]:
-    mask_auto   = df_sub["tipo_carta_norm"] == "AUTOMATICA"
-    mask_manual = df_sub["tipo_carta_norm"] != "AUTOMATICA"
-    TRUE_MASK   = pd.Series(True, index=df_sub.index)
+    TRUE_MASK = pd.Series(True, index=df_sub.index)
 
     result = []
     for row in row_structure:
         k = row["key"]
         if k[0] == "total":
             mask = TRUE_MASK
-        elif k[0] == "auto":
-            mask = mask_auto
-        elif k[0] == "manual":
-            mask = mask_manual
-        elif k[0] == "auto_nivel":
+        elif k[0] == "total_nivel":
             _, nivel = k
-            mask = mask_auto & (df_sub["nivel_norm"] == nivel)
-        elif k[0] == "grupo":
+            mask = df_sub["nivel_norm"] == nivel
+        elif k[0] == "grupo_origen":
             _, grupo = k
-            mask = mask_auto & (df_sub["grupo_origen"] == grupo)
-        elif k[0] == "nivel":
+            mask = df_sub["grupo_manual"] == grupo
+        else:  # grupo_origen_nivel
             _, grupo, nivel = k
-            mask = mask_auto & (df_sub["grupo_origen"] == grupo) & (df_sub["nivel_norm"] == nivel)
-        elif k[0] == "manual_nivel":
-            _, nivel = k
-            mask = mask_manual & (df_sub["nivel_norm"] == nivel)
-        elif k[0] == "manual_grupo":
-            _, grupo = k
-            mask = mask_manual & (df_sub["grupo_manual"] == grupo)
-        else:  # manual_grupo_nivel
-            _, grupo, nivel = k
-            mask = mask_manual & (df_sub["grupo_manual"] == grupo) & (df_sub["nivel_norm"] == nivel)
+            mask = (df_sub["grupo_manual"] == grupo) & (df_sub["nivel_norm"] == nivel)
         result.append(counts_by_semana(df_sub, mask, semanas))
     return result
 
@@ -478,15 +430,10 @@ def generar_html(row_structure: list, all_data: dict,
     )
 
     TYPE_CLASS = {
-        "total":             "r-total",
-        "subtotal":          "r-sub-auto",
-        "subtotal_manual":   "r-sub-manual",
-        "auto_nivel":        "r-auto-nivel",
-        "grupo":             "r-grupo",
-        "nivel":             "r-nivel",
-        "manual_nivel":      "r-manual-nivel",
-        "manual_grupo":      "r-manual-grupo",
-        "manual_grupo_nivel":"r-manual-grupo-nivel",
+        "total":              "r-total",
+        "total_nivel":        "r-total-nivel",
+        "grupo_origen":       "r-grupo-origen",
+        "grupo_origen_nivel": "r-grupo-origen-nivel",
     }
     PAD = {0: 10, 1: 22, 2: 36, 3: 52}
 
@@ -665,9 +612,13 @@ tr.r-sub-manual td{{background:#1E3669;color:#BAD4F8;font-weight:700;font-size:1
 /* Niveles dentro de Manuales */
 tr.r-manual-nivel      td{{background:#2A4F96;color:#93C5FD;font-size:11.5px;font-style:italic}}
 /* Origen dentro de No se contacta */
-tr.r-manual-grupo      td{{background:#2E5FAA;color:#DBEAFE;font-weight:600;font-size:12px}}
-tr.r-manual-grupo-nivel td{{background:#EEF2FF;color:#1E3669;font-size:11.5px}}
-tr.r-manual-grupo-nivel:nth-child(even) td{{background:#E0E7FF}}
+tr.r-total-nivel        td{{background:#1A4A3A;color:#6EE7B7;font-weight:700;font-size:12px}}
+tr.r-total-nivel        td.vc{{color:#6EE7B7;font-weight:700}}
+tr.r-grupo-origen       td{{background:#2E9E82;color:#ECFDF5;font-weight:600;font-size:12px}}
+tr.r-grupo-origen       td.vc{{color:#ECFDF5;font-weight:600}}
+tr.r-grupo-origen-nivel td{{background:#F0FAF7;color:#1A3D33;font-size:11.5px}}
+tr.r-grupo-origen-nivel:nth-child(even) td{{background:#E4F6F1}}
+tr.r-grupo-origen-nivel td.vc{{color:#2D6B55}}
 
 tr:not(.r-total):hover td{{filter:brightness(.94)}}
 
