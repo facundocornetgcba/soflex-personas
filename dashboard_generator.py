@@ -49,7 +49,7 @@ _DNI_INVALIDOS_STR = {
 # =============================================================================
 
 def clasificar_contacto(row):
-    """Clasificación estricta de contactos."""
+    """Clasificación estricta de contactos usando categoria_final/nivel_contacto del ETL."""
     if row.get('estado') == 'PENDIENTE':
         # Excepcion pedida: Si es comuna 2 o 14, NO devolver 'Sin cubrir' automaticamente
         c_val = row.get('comuna_calculada')
@@ -63,9 +63,20 @@ def clasificar_contacto(row):
 
         if not es_2_or_14:
             return 'Sin cubrir'
-    
+
+    # Usar categoria_final (calculada por el ETL con matching preciso)
+    cat_final = str(row.get('categoria_final', '')).strip().lower()
+    if cat_final == 'sin cubrir':
+        return 'Sin cubrir'
+
+    nivel = str(row.get('nivel_contacto', '')).strip()
+    if nivel == 'Se contacta':
+        return 'Se contacta'
+    if nivel in ('No se contacta', 'Desestimado'):
+        return 'No se contacta'
+
+    # Fallback al texto crudo para registros sin categoria_final (datos históricos)
     resultado = str(row.get('resultado', '')).lower()
-    
     if any(phrase in resultado for phrase in ['no se contacta', 'desestimado']):
         return 'No se contacta'
     elif 'sin cubrir' in resultado:
