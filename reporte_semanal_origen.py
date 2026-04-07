@@ -774,8 +774,10 @@ tr.r-niv-res-manual     td.vc{{color:#2A4F96}}
         <span><strong>Fuente:</strong> {FILE_PARQUET}</span>
         <span><strong>Semanas:</strong> {len(semanas)} · la más antigua a la izquierda</span>
         <span><strong>%:</strong> cada fila respecto a su fila padre · clic en fila para expandir/colapsar</span>
-        <span><strong>Gobierno Ciudad:</strong> 911 · Org. Públicos · BAP/MDR · BOTI · Subte · Esp. Públicos · Judiciales · Cajeros · Monitoreo 108 · Adicciones · Seguimiento · Niña/Niño · Punto Político</span>
-        <span><strong>Vecino/ONG/PST:</strong> Vecino · ONG · Gestión Colaborativa · Sin Techo · Espontáneo</span>
+        <span><strong>Llamados 108:</strong> Monitoreo 108 · BOTI · Sin Techo · Vecino · ONG · Cajeros</span>
+        <span><strong>BA Colaborativa / 911:</strong> Gestión Colaborativa · 911 · Subte · Judiciales · Espacios Públicos · Organismos Públicos · Desde BAP/MDR</span>
+        <span><strong>Casos particulares:</strong> Punto Político/Fuera del 108 · Seguimiento · Niña/Niño · Adicciones</span>
+        <span><strong>Espontáneas:</strong> Espontáneo (persona que se acerca por cuenta propia)</span>
       </div>
     </div>
 
