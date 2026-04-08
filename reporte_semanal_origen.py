@@ -27,6 +27,7 @@ import pandas as pd
 import numpy as np
 
 from core.drive_manager import get_drive_service, download_parquet_as_df
+from dashboard_generator import calculate_dni_evolution
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 
@@ -418,8 +419,20 @@ def build_all_chart_data(df: pd.DataFrame, global_weeks: list) -> dict:
 
 # ── Generación HTML ────────────────────────────────────────────────────────────
 
+def _prepare_dni_chart_json(dni_data_list: list) -> dict:
+    return {
+        "labels": [d["Semana"].strftime("%d/%m") for d in dni_data_list],
+        "datasets": [
+            {"label": "Nuevos",      "data": [d["nuevos"]      for d in dni_data_list], "backgroundColor": "#10B981"},
+            {"label": "Recurrentes", "data": [d["recurrentes"] for d in dni_data_list], "backgroundColor": "#3B82F6"},
+            {"label": "Migratorios", "data": [d["migratorios"] for d in dni_data_list], "backgroundColor": "#F97316"},
+        ]
+    }
+
+
 def generar_html(row_structure: list, all_data: dict,
-                 semanas, chart_data_all: dict, last_update: str,
+                 semanas, chart_data_all: dict, dni_chart_data: dict,
+                 last_update: str,
                  img_tag: str = "", n_sem_default: int = 8) -> str:
 
     sem_labels = [s.strftime("%d/%m") for s in semanas]
@@ -473,6 +486,7 @@ def generar_html(row_structure: list, all_data: dict,
     json_data       = json.dumps(all_data, separators=(",", ":"))
     json_charts_all = json.dumps(chart_data_all, ensure_ascii=False)
     json_sem_iso    = json.dumps(sem_iso)
+    json_dni_charts = json.dumps(dni_chart_data, ensure_ascii=False)
 
     def chart_card(canvas_id, title):
         return (f'<div class="chart-card">'
@@ -491,10 +505,8 @@ def generar_html(row_structure: list, all_data: dict,
         f'<div class="tbl-wrap" id="resultado-tbl-wrap"></div>'
         f'</div>'
         f'<div class="charts-grid">'
-        f'{chart_card("entrevistaAutoChart",   "Entrevista — Automáticas (Se Contacta)")}'
-        f'{chart_card("entrevistaManualChart", "Entrevista — Manuales (Se Contacta)")}'
-        f'{chart_card("resultadoAutoChart",    "Resultado Final — Automáticas (Se Contacta)")}'
-        f'{chart_card("resultadoManualChart",  "Resultado Final — Manuales (Se Contacta)")}'
+        f'{chart_card("dniEvoChart",      "Evolución Semanal de DNIs — Nuevos, Recurrentes y Migratorios")}'
+        f'{chart_card("resultadoCombChart", "Resultado Final (Se Contacta)")}'
         f'</div>'
         f'</div>'
     )
@@ -787,10 +799,11 @@ tr.r-niv-res-manual     td.vc{{color:#2A4F96}}
 
 <script>
 // ── Datos ─────────────────────────────────────────────────────────────────────
-const DATA       = {json_data};
-const CHART_DATA = {json_charts_all};
-const PARENT_IDX = {parent_ridx_js};
-const WEEK_DATES = {json_sem_iso};
+const DATA          = {json_data};
+const CHART_DATA    = {json_charts_all};
+const DNI_CHART_DATA = {json_dni_charts};
+const PARENT_IDX    = {parent_ridx_js};
+const WEEK_DATES    = {json_sem_iso};
 const N_SEM_DEFAULT = {n_sem_default};
 
 // ── Filtro de columnas por fecha ──────────────────────────────────────────────
@@ -918,26 +931,72 @@ if (typeof ChartDataLabels !== 'undefined') {{
 }}
 
 const CHART_INSTANCES = {{}};
-const CHART_KEYS = {{
-  'entrevistaAutoChart':   cd => cd.auto_entrevista,
-  'entrevistaManualChart': cd => cd.manual_entrevista,
-  'resultadoAutoChart':    cd => cd.auto_resultado,
-  'resultadoManualChart':  cd => cd.manual_resultado,
-}};
-
-const ENT_COLORS = ['#10B981', '#3B82F6', '#F97316'];
 const RES_COLORS = ['#8B5CF6', '#10B981', '#F59E0B', '#EF4444', '#F97316', '#06B6D4', '#9CA3AF'];
 
-function initContactoChart(canvasId, countsByGroup, colors) {{
+const TOTALS_PLUGIN = {{
+  id: 'totals',
+  afterDatasetsDraw: chart => {{
+    const ctx2 = chart.ctx;
+    chart.data.labels.forEach((_, idx) => {{
+      let total = 0;
+      chart.data.datasets.forEach(ds => total += (ds.data[idx] || 0));
+      if (total > 0) {{
+        const meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
+        ctx2.fillStyle = '#1f2937'; ctx2.font = 'bold 11px sans-serif';
+        ctx2.textAlign = 'center';
+        ctx2.fillText(total, meta.data[idx].x, meta.data[idx].y - 5);
+      }}
+    }});
+  }}
+}};
+
+function initDniChart(canvasId, dniData) {{
   const el = document.getElementById(canvasId);
   if (!el) return;
-  const weeks = CHART_DATA.todas.weeks;
-  const datasets = Object.entries(countsByGroup).map(([label, data], i) => ({{
-    label, data, backgroundColor: colors[i % colors.length],
+  CHART_INSTANCES[canvasId] = new Chart(el.getContext('2d'), {{
+    type: 'bar',
+    data: dniData,
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      scales: {{
+        x: {{ stacked: true, grid: {{ display: false }} }},
+        y: {{ stacked: true, beginAtZero: true }},
+      }},
+      plugins: {{
+        legend: {{ position: 'top' }},
+        tooltip: {{ mode: 'index', intersect: false }},
+        datalabels: {{
+          color: 'white', font: {{ weight: 'bold', size: 10 }},
+          formatter: v => v > 0 ? v : ''
+        }}
+      }}
+    }},
+    plugins: [TOTALS_PLUGIN]
+  }});
+}}
+
+function getCombinedResultado(cd) {{
+  const combined = {{}};
+  RES_GRUPOS.forEach(g => {{
+    const a = cd.auto_resultado[g]   || cd.weeks.map(() => 0);
+    const m = cd.manual_resultado[g] || cd.weeks.map(() => 0);
+    combined[g] = a.map((v, i) => v + (m[i] || 0));
+  }});
+  return combined;
+}}
+
+function initResultadoCombChart(canvasId, cd) {{
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const combined = getCombinedResultado(cd);
+  const datasets = RES_GRUPOS.map((g, i) => ({{
+    label: g,
+    data: combined[g] || cd.weeks.map(() => 0),
+    backgroundColor: RES_COLORS[i % RES_COLORS.length],
   }}));
   CHART_INSTANCES[canvasId] = new Chart(el.getContext('2d'), {{
     type: 'bar',
-    data: {{ labels: weeks, datasets }},
+    data: {{ labels: cd.weeks, datasets }},
     options: {{
       responsive: true, maintainAspectRatio: false,
       scales: {{
@@ -953,37 +1012,34 @@ function initContactoChart(canvasId, countsByGroup, colors) {{
         }}
       }}
     }},
-    plugins: [{{
-      id: 'totals',
-      afterDatasetsDraw: chart => {{
-        const ctx2 = chart.ctx;
-        chart.data.labels.forEach((_, idx) => {{
-          let total = 0;
-          chart.data.datasets.forEach(ds => total += (ds.data[idx] || 0));
-          if (total > 0) {{
-            const meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
-            ctx2.fillStyle = '#1f2937'; ctx2.font = 'bold 11px sans-serif';
-            ctx2.textAlign = 'center';
-            ctx2.fillText(total, meta.data[idx].x, meta.data[idx].y - 5);
-          }}
-        }});
-      }}
-    }}]
+    plugins: [TOTALS_PLUGIN]
   }});
 }}
 
 function updateCharts(key) {{
+  // Actualizar grafico DNI
+  const dniData = DNI_CHART_DATA[key] || DNI_CHART_DATA['todas'];
+  const dniChart = CHART_INSTANCES['dniEvoChart'];
+  if (dniChart && dniData) {{
+    dniChart.data.labels = dniData.labels;
+    dniChart.data.datasets.forEach(ds => {{
+      const found = dniData.datasets.find(d => d.label === ds.label);
+      if (found) ds.data = found.data;
+    }});
+    dniChart.update('none');
+  }}
+
+  // Actualizar grafico resultado combinado
   const cd = CHART_DATA[key];
   if (!cd) return;
-  Object.entries(CHART_KEYS).forEach(([canvasId, getter]) => {{
-    const chart = CHART_INSTANCES[canvasId];
-    if (!chart) return;
-    const groups = getter(cd);
-    chart.data.datasets.forEach(ds => {{
-      if (groups[ds.label] !== undefined) ds.data = groups[ds.label];
+  const resChart = CHART_INSTANCES['resultadoCombChart'];
+  if (resChart) {{
+    const combined = getCombinedResultado(cd);
+    resChart.data.datasets.forEach(ds => {{
+      if (combined[ds.label] !== undefined) ds.data = combined[ds.label];
     }});
-    chart.update('none');
-  }});
+    resChart.update('none');
+  }}
 }}
 
 // ── Tabla entrevista ──────────────────────────────────────────────────────────
@@ -1164,10 +1220,8 @@ function renderResultadoTable(key) {{
 
 // Inicializar con datos de "todas"
 const cd0 = CHART_DATA.todas;
-initContactoChart('entrevistaAutoChart',   cd0.auto_entrevista,   ENT_COLORS);
-initContactoChart('entrevistaManualChart', cd0.manual_entrevista, ENT_COLORS);
-initContactoChart('resultadoAutoChart',    cd0.auto_resultado,    RES_COLORS);
-initContactoChart('resultadoManualChart',  cd0.manual_resultado,  RES_COLORS);
+initDniChart('dniEvoChart', DNI_CHART_DATA['todas']);
+initResultadoCombChart('resultadoCombChart', cd0);
 renderEntrevistaTable('todas');
 renderResultadoTable('todas');
 </script>
@@ -1211,6 +1265,14 @@ def main():
     print(f"\n📈 Calculando datos de gráficos por filtro ({N_SEM_CHART} semanas)...")
     chart_data_all = build_all_chart_data(df, global_weeks)
 
+    print(f"\n📊 Calculando evolución DNI por comuna...")
+    dni_chart_data = {}
+    for c_str, c_id in [("2", 2), ("13", 13), ("14", 14)]:
+        dni_chart_data[c_str] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=c_id))
+    dni_chart_data["14.5"]  = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
+    dni_chart_data["todas"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=None))
+    dni_chart_data["resto"] = dni_chart_data["todas"]
+
     last_update = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
     logo_path = "logoba-removebg-preview.png"
@@ -1222,7 +1284,7 @@ def main():
         img_tag = '<span class="text-white font-bold text-xl">BA</span>'
 
     print("\n🎨 Generando HTML...")
-    html = generar_html(row_structure, all_data, semanas, chart_data_all, last_update, img_tag, n_sem_default=N_SEMANAS)
+    html = generar_html(row_structure, all_data, semanas, chart_data_all, dni_chart_data, last_update, img_tag, n_sem_default=N_SEMANAS)
 
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
         f.write(html)
