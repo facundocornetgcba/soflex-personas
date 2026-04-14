@@ -63,6 +63,7 @@ FILE_RAW     = "2025_historico_v2.parquet"
 ASSETS_DIR    = os.path.join(os.path.dirname(__file__), "assets", "comunas")
 SHP_COMUNAS   = os.path.join(ASSETS_DIR, "comunas.shp")
 KMZ_PALERMO_N = os.path.join(ASSETS_DIR, "Palermo_Norte.kmz")
+KML_BELGRANO  = os.path.join(ASSETS_DIR, "Poligonos Belgrano.kml")
 
 AGENCIAS_EXCLUIR = {
     "DIPA I COMBATE", "MAPA DE RIESGO - SEGUIMIENTO",
@@ -245,6 +246,29 @@ def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
     print(f"      Palermo Norte: {mask_pn.sum():,}")
     del join_pn, gdf_pn; gc.collect()
 
+    # Paso 1b: Belgrano (solo los sin clasificar por Palermo Norte)
+    print("   [POINT] Belgrano (KML)...")
+    fiona.drvsupport.supported_drivers["KML"]    = "rw"
+    fiona.drvsupport.supported_drivers["LIBKML"] = "rw"
+    gdf_bg = gpd.read_file(KML_BELGRANO)
+    if puntos.crs != gdf_bg.crs:
+        gdf_bg = gdf_bg.to_crs(puntos.crs)
+
+    mask_sin_bg = mask_geo & df["comuna_calculada"].isna()
+    if mask_sin_bg.any():
+        df_sin_bg = df[mask_sin_bg].copy()
+        puntos_sin_bg = gpd.GeoDataFrame(
+            df_sin_bg,
+            geometry=gpd.points_from_xy(df_sin_bg["Longitud"], df_sin_bg["Latitud"]),
+            crs="EPSG:4326",
+        )
+        join_bg = gpd.sjoin(puntos_sin_bg, gdf_bg[["geometry"]], how="left", predicate="within")
+        join_bg = join_bg[~join_bg.index.duplicated(keep="first")]
+        mask_bg = join_bg["index_right"].notna()
+        df.loc[mask_bg[mask_bg].index, "comuna_calculada"] = 13.5
+        print(f"      Belgrano: {mask_bg.sum():,}")
+    del gdf_bg; gc.collect()
+
     # Paso 2: SHP comunas (solo los sin clasificar)
     print("   [POINT] SHP comunas...")
     gdf_com = gpd.read_file(SHP_COMUNAS)
@@ -272,6 +296,7 @@ def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
     df["comuna_calculada"] = df["comuna_calculada"].apply(normalizar_comuna)
 
     print(f"   [OK] Palermo Norte (14.5): {(df['comuna_calculada'] == 14.5).sum():,}")
+    print(f"   [OK] Belgrano (13.5):      {(df['comuna_calculada'] == 13.5).sum():,}")
     print(f"   [OK] Comunas 1-15:         {df['comuna_calculada'].between(1,15).sum():,}")
     print(f"   [WARN]  Sin comuna:           {df['comuna_calculada'].isna().sum():,}")
     return df

@@ -6,6 +6,7 @@ venv/
 .env
 credentials.json
 CLAUDE.md
+.claude
 
 # OS
 .DS_Store

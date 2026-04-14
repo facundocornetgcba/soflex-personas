@@ -262,7 +262,9 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
             return None
         try:
             f = float(v)
-            return "14.5" if f == 14.5 else str(int(f))
+            if f == 14.5: return "14.5"
+            if f == 13.5: return "13.5"
+            return str(int(f))
         except Exception:
             return None
     df["comuna_key"] = df["comuna_calculada"].apply(norm_comuna)
@@ -323,7 +325,7 @@ def compute_vals_for_df(df_sub: pd.DataFrame, row_structure: list, semanas) -> l
     return result
 
 
-COMUNAS_DESTACADAS = {"2", "13", "14", "14.5"}
+COMUNAS_DESTACADAS = {"2", "13.5", "14.5"}
 
 def build_all_data(df: pd.DataFrame, row_structure: list, semanas) -> tuple:
     data = {}
@@ -479,7 +481,7 @@ def generar_html(row_structure: list, all_data: dict,
     parent_ridx_js = json.dumps([r["parent_ridx"] for r in row_structure])
 
     options_html = '<option value="todas">Todas las comunas</option>\n'
-    for c, label in [("2", "Comuna 2"), ("13", "Comuna 13"), ("14", "Comuna 14"), ("14.5", "Palermo Norte (14.5)"), ("resto", "Resto de la ciudad")]:
+    for c, label in [("2", "Comuna 2"), ("13.5", "Belgrano (13.5)"), ("14.5", "Palermo Norte (14.5)"), ("resto", "Resto de la ciudad")]:
         if c in all_data:
             options_html += f'<option value="{c}">{label}</option>\n'
 
@@ -1267,9 +1269,9 @@ def main():
 
     print(f"\n📊 Calculando evolución DNI por comuna...")
     dni_chart_data = {}
-    for c_str, c_id in [("2", 2), ("13", 13), ("14", 14)]:
-        dni_chart_data[c_str] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=c_id))
-    dni_chart_data["14.5"]  = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
+    dni_chart_data["2"]    = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=2))
+    dni_chart_data["13.5"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=13.5))
+    dni_chart_data["14.5"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
     dni_chart_data["todas"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=None))
     dni_chart_data["resto"] = dni_chart_data["todas"]
 
