@@ -925,10 +925,14 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
     #  Fase 1: Geo 
     df = calcular_comunas(df)
 
-    #  Fase 2: Limpieza y categorizacin 
+    #  Fase 2: Limpieza y categorizacin
     df = limpiar_y_categorizar(df)
 
-    #  Fase 3: Tipo_Evolucion con historial real de Neon 
+    if df.empty:
+        print("⚠️  Sin registros tras filtro de agencias. Nada que cargar.")
+        return None
+
+    #  Fase 3: Tipo_Evolucion con historial real de Neon
     print("\n🔗 Cargando estado historico desde Neon...")
     engine = get_neon_engine()
     ultima_comuna, dni_seen = _build_estado_historico(engine)
