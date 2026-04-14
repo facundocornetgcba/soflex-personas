@@ -348,7 +348,229 @@ def limpiar_y_categorizar(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-#  Fase 3: Tipo_Evolucion (incremental) 
+#  Reconciliacion de Pendientes
+
+def reconciliar_pendientes(df_excel: pd.DataFrame, folder_id: str) -> int:
+    """
+    Actualiza en Neon los registros que estaban PENDIENTE y ya tienen cierre en el Excel.
+    Recalcula los campos derivados de cierre (categoria_final, nivel_contacto, etc.)
+    y actualiza tambien el parquet de Drive.
+
+    Estrategia eficiente para Neon free tier:
+      - Solo consulta los Id Suceso PENDIENTE (query liviana).
+      - Batch UPDATE via tabla temporal en una sola transaccion.
+      - No descarga toda la tabla.
+
+    Retorna cantidad de filas actualizadas en Neon.
+    """
+    print("\n[RECON] Reconciliando pendientes...")
+
+    # 1. Obtener Id Sucesos PENDIENTE de Neon (solo esa columna, muy liviano)
+    engine = get_neon_engine()
+    try:
+        with engine.connect() as conn:
+            ids_pend = pd.read_sql(
+                'SELECT DISTINCT "Id Suceso" FROM historico_limpio WHERE "Estado" = \'PENDIENTE\'',
+                conn,
+            )["Id Suceso"].dropna().tolist()
+    except Exception as exc:
+        print(f"   [WARN] No se pudo consultar pendientes: {exc}")
+        return 0
+    finally:
+        engine.dispose()
+
+    if not ids_pend:
+        print("   [OK] Sin pendientes en Neon.")
+        return 0
+
+    print(f"   {len(ids_pend):,} Id Suceso pendientes en Neon.")
+
+    # 2. Identificar columnas en el Excel (insensible a mayusculas/espacios)
+    cols_norm = {c.lower().replace(" ", "").replace("_", ""): c for c in df_excel.columns}
+    col_id     = cols_norm.get("idsuceso")
+    col_estado = cols_norm.get("estado")
+    col_ff     = cols_norm.get("fechafin")
+
+    if not col_id or not col_estado:
+        print("   [WARN] No se encontraron columnas Id Suceso/Estado en Excel. Saltando reconciliacion.")
+        return 0
+
+    # 3. Filtrar filas del Excel que ya cerraron y estaban pendientes en Neon
+    ids_set = set(str(x) for x in ids_pend)
+    mask = (
+        df_excel[col_id].astype(str).isin(ids_set) &
+        (df_excel[col_estado].astype(str).str.strip() != "PENDIENTE")
+    )
+    df_cierre = df_excel[mask].copy()
+
+    if df_cierre.empty:
+        print("   [OK] Ningun pendiente tiene cierre en el export actual.")
+        return 0
+
+    n_sucesos = df_cierre[col_id].nunique()
+    print(f"   {n_sucesos:,} sucesos con cierre encontrados en el export.")
+
+    # 4. Normalizar columnas de cierre y recalcular campos derivados
+    cols_c = {c.lower().replace(" ", "_"): c for c in df_cierre.columns}
+    for canon in ("cierre_supervisor", "resultado"):
+        real = cols_c.get(canon)
+        if real and real != canon:
+            df_cierre = df_cierre.rename(columns={real: canon})
+
+    for col in ("cierre_supervisor", "resultado"):
+        if col in df_cierre.columns:
+            df_cierre[col] = df_cierre[col].replace(VALORES_VACIOS, np.nan)
+
+    tiene_sup = "cierre_supervisor" in df_cierre.columns
+    tiene_res = "resultado" in df_cierre.columns
+    if tiene_sup and tiene_res:
+        df_cierre["cierre_texto"] = np.where(
+            df_cierre["cierre_supervisor"].astype(object).isna(),
+            df_cierre["resultado"].astype(object),
+            df_cierre["cierre_supervisor"].astype(object),
+        )
+    elif tiene_sup:
+        df_cierre["cierre_texto"] = df_cierre["cierre_supervisor"].astype(object)
+    elif tiene_res:
+        df_cierre["cierre_texto"] = df_cierre["resultado"].astype(object)
+    else:
+        df_cierre["cierre_texto"] = np.nan
+
+    df_cierre["texto_limpio"]    = df_cierre["cierre_texto"].apply(limpiar_texto_cierre)
+    df_cierre["categoria_final"] = df_cierre["texto_limpio"].apply(mapear_categoria_con_reglas)
+    df_cierre["nivel_contacto"]  = df_cierre["categoria_final"].apply(obtener_nivel_contacto)
+    niveles = df_cierre["categoria_final"].apply(obtener_niveles)
+    df_cierre["contacto"]     = niveles.apply(lambda x: x[0])
+    df_cierre["brinda_datos"] = niveles.apply(lambda x: x[1])
+
+    if col_ff:
+        df_cierre["Fecha Fin"] = pd.to_datetime(df_cierre[col_ff], errors="coerce")
+    else:
+        df_cierre["Fecha Fin"] = pd.NaT
+
+    # 5. Dedup por Id Suceso (todas las filas del mismo suceso tienen los mismos campos de cierre)
+    UPDATE_COLS = [
+        "Estado", "Fecha Fin", "cierre_texto", "texto_limpio",
+        "categoria_final", "nivel_contacto", "contacto", "brinda_datos",
+    ]
+    df_update = (
+        df_cierre
+        .rename(columns={col_id: "Id Suceso", col_estado: "Estado"})
+        [["Id Suceso"] + UPDATE_COLS]
+        .drop_duplicates(subset=["Id Suceso"], keep="first")
+        .reset_index(drop=True)
+    )
+    # Normalizar Id Suceso a string para garantizar matching con Neon y parquet
+    df_update["Id Suceso"] = df_update["Id Suceso"].astype(str).str.strip()
+
+    # 6. Batch UPDATE en Neon via tabla temporal (una sola transaccion)
+    engine2 = get_neon_engine()
+    raw = engine2.raw_connection()
+    cur = raw.cursor()
+    n_updated = 0
+    try:
+        cur.execute("""
+            CREATE TEMP TABLE _recon_update (
+                id_suceso       TEXT,
+                estado          TEXT,
+                fecha_fin       TIMESTAMP,
+                cierre_texto    TEXT,
+                texto_limpio    TEXT,
+                categoria_final TEXT,
+                nivel_contacto  TEXT,
+                contacto        TEXT,
+                brinda_datos    TEXT
+            ) ON COMMIT DROP
+        """)
+
+        buf = io.StringIO()
+        df_update.to_csv(buf, index=False, header=False, na_rep="\\N",
+                         date_format="%Y-%m-%d %H:%M:%S")
+        buf.seek(0)
+        cur.copy_expert(
+            "COPY _recon_update FROM STDIN WITH (FORMAT CSV, NULL '\\N')",
+            buf,
+        )
+
+        cur.execute("""
+            UPDATE historico_limpio h
+            SET
+                "Estado"        = u.estado,
+                "Fecha Fin"     = u.fecha_fin,
+                cierre_texto    = u.cierre_texto,
+                texto_limpio    = u.texto_limpio,
+                categoria_final = u.categoria_final,
+                nivel_contacto  = u.nivel_contacto,
+                contacto        = u.contacto,
+                brinda_datos    = u.brinda_datos
+            FROM _recon_update u
+            WHERE h."Id Suceso" = u.id_suceso
+              AND h."Estado"    = 'PENDIENTE'
+        """)
+        n_updated = cur.rowcount
+        raw.commit()
+        print(f"   [OK] Neon UPDATE: {n_updated:,} filas actualizadas.")
+    except Exception as exc:
+        raw.rollback()
+        print(f"   [ERROR] Reconciliacion Neon fallo: {exc}")
+        return 0
+    finally:
+        cur.close()
+        raw.close()
+        engine2.dispose()
+
+    if n_updated == 0:
+        return 0
+
+    # 7. Aplicar los mismos cambios al parquet de Drive
+    print("   [DIR] Actualizando parquet de backup...")
+    try:
+        service = get_drive_service()
+        df_p = download_parquet_as_df(service, FILE_PARQUET, folder_id)
+        if df_p is not None and not df_p.empty:
+            # Mapear columnas del parquet (puede tener nombres distintos)
+            p_cols = {c.lower().replace(" ", "").replace("_", ""): c for c in df_p.columns}
+            p_id  = p_cols.get("idsuceso", "Id Suceso")
+            p_est = p_cols.get("estado", "Estado")
+
+            # Indice de updates por Id Suceso (string, ya normalizado)
+            upd_idx = df_update.set_index("Id Suceso")
+            ids_update_set = set(df_update["Id Suceso"])  # ya son strings
+
+            mask_p = (
+                df_p[p_id].astype(str).str.strip().isin(ids_update_set) &
+                (df_p[p_est].astype(str).str.strip() == "PENDIENTE")
+            )
+
+            # Actualizar cada columna si existe en el parquet
+            col_map = {
+                "Estado": p_est,
+                "Fecha Fin": p_cols.get("fechafin", "Fecha Fin"),
+                "cierre_texto": p_cols.get("cierretexto", "cierre_texto"),
+                "texto_limpio": p_cols.get("textolimpio", "texto_limpio"),
+                "categoria_final": p_cols.get("categoriafinal", "categoria_final"),
+                "nivel_contacto": p_cols.get("nivelcontacto", "nivel_contacto"),
+                "contacto": p_cols.get("contacto", "contacto"),
+                "brinda_datos": p_cols.get("brindadatos", "brinda_datos"),
+            }
+            for src_col, dst_col in col_map.items():
+                if dst_col in df_p.columns:
+                    df_p.loc[mask_p, dst_col] = (
+                        df_p.loc[mask_p, p_id]
+                        .astype(str).str.strip()
+                        .map(upd_idx[src_col])
+                        .values
+                    )
+
+            upload_df_as_parquet(service, df_p, FILE_PARQUET, folder_id)
+            print(f"   [OK] Parquet actualizado: {mask_p.sum():,} filas.")
+    except Exception as exc:
+        print(f"   [WARN] No se pudo actualizar el parquet: {exc}")
+
+    return n_updated
+
+
+#  Fase 3: Tipo_Evolucion (incremental)
 
 def _build_estado_historico(engine) -> tuple[dict, set]:
     """
@@ -643,11 +865,18 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
 
     df["Fecha Inicio"] = pd.to_datetime(df["Fecha Inicio"], errors="coerce")
 
+    # Guardar Excel completo ANTES del filtro de watermark para la reconciliacion
+    df_full = df.copy()
+
     if watermark:
         print(f"📅 Watermark: {watermark} - filtrando solo registros posteriores...")
         df = df[df["Fecha Inicio"] > watermark].copy()
     else:
         print("📅 Sin watermark - procesando todo el archivo (primera carga).")
+
+    # Reconciliar pendientes siempre (incluso si no hay registros nuevos)
+    reconciliar_pendientes(df_full, folder_id)
+    del df_full
 
     if df.empty:
         print("⚠️  No hay registros nuevos. Nada que hacer.")
