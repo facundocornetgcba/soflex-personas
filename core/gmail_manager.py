@@ -47,7 +47,7 @@ def get_latest_excel_from_gmail() -> bytes:
     """
     service = _get_gmail_service()
 
-    query = f"from:{SENDER} subject:{SUBJECT}"
+    query = f'from:{SENDER} subject:"{SUBJECT}"'
     result = service.users().messages().list(
         userId="me", q=query, maxResults=5
     ).execute()
