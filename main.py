@@ -15,6 +15,7 @@ from core.drive_manager   import (
     download_file_as_bytes, get_drive_service,
     download_parquet_as_df, upload_df_as_parquet, get_max_date_from_parquet,
 )
+from core.gmail_manager   import get_latest_excel_from_gmail
 from data_processor        import procesar_datos
 
 import sys
@@ -107,35 +108,11 @@ def main():
         print(f"   ❌ Error: {exc}")
         raise
 
-    # 2. Buscar Excel ms reciente en 01_insumos
-    print(f"\n🔎 Buscando Excel en 01_insumos...")
-    query = (
-        f"'{INPUT_FOLDER_ID}' in parents "
-        "and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' "
-        "or mimeType = 'application/vnd.ms-excel') "
-        "and trashed = false"
-    )
-    results = service.files().list(
-        q=query,
-        orderBy="createdTime desc",
-        pageSize=1,
-        fields="files(id, name, createdTime)",
-    ).execute()
-
-    archivos = results.get("files", [])
-    if not archivos:
-        print("   ⚠️  No se encontro ningun Excel en 01_insumos.")
-        print("      Sub el archivo y volv a correr.")
-        return
-
-    archivo = archivos[0]
-    print(f"   📄 {archivo['name']}  (subido: {archivo['createdTime']})")
-
-    # 3. Descargar Excel a memoria
-    print("\n⬇️  Descargando Excel...")
+    # 2-3. DESCARGAR EXCEL DESDE GMAIL
+    print("\n⬇️  Buscando adjunto en Gmail (Informe BAP Personas)...")
     try:
-        excel_bytes = download_file_as_bytes(service, archivo["id"])
-        print("   ✅ OK")
+        excel_bytes = get_latest_excel_from_gmail()
+        print(f"   ✅ OK ({len(excel_bytes):,} bytes)")
     except Exception as exc:
         print(f"   ❌ Error: {exc}")
         raise

@@ -141,7 +141,10 @@ def upload_df_as_parquet(service, df, file_name, folder_id):
     """
     print(f"⬆️  Subiendo '{file_name}' a Drive...")
     fh = io.BytesIO()
-    df.to_parquet(fh, index=False, engine='pyarrow', compression='snappy')
+    df_out = df.copy()
+    for col in df_out.select_dtypes(include='category').columns:
+        df_out[col] = df_out[col].astype(object)
+    df_out.to_parquet(fh, index=False, engine='pyarrow', compression='snappy')
     fh.seek(0)
     
     media = MediaIoBaseUpload(fh, mimetype='application/octet-stream', resumable=True)

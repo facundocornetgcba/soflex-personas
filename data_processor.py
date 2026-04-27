@@ -888,6 +888,14 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
         print(f"[ERROR] Error leyendo Excel: {exc}")
         return None
 
+    # Normalizar nombres de columna segun formato fuente (Gmail vs soflex local)
+    df.rename(columns={
+        "Id.Suceso":  "Id Suceso",
+        "Documento":  "Persona DNI",
+        "Nombre":     "Persona Nombre",
+        "Apellido":   "Persona Apellido",
+    }, inplace=True)
+
     df["Fecha Inicio"] = pd.to_datetime(df["Fecha Inicio"], errors="coerce")
 
     # Guardar Excel completo ANTES del filtro de watermark para la reconciliacion

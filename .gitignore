@@ -4,7 +4,13 @@ __pycache__/
 venv/
 .venv/
 .env
+
+# Credenciales y tokens (nunca al repo)
 credentials.json
+credentials_gmail.json
+token_gmail.json
+
+# Claude
 CLAUDE.md
 .claude
 
@@ -12,7 +18,8 @@ CLAUDE.md
 .DS_Store
 Thumbs.db
 
-credentials.json
-
-# Outputs generados (no versionar binarios grandes)
+# Datos fuente (binarios grandes)
+*.xls
+*.xlsx
 *.pbix
+soflex/

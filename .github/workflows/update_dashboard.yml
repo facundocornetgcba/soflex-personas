@@ -34,6 +34,9 @@ jobs:
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
+      - name: Escribir token Gmail
+        run: echo '${{ secrets.GMAIL_TOKEN }}' > token_gmail.json
+
       # --- NUEVO PASO: EJECUTAR LA CARGA DE DATOS ---
       - name: Procesar Datos (ETL + BigQuery)
         run: python main.py
