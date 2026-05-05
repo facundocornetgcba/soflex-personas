@@ -27,6 +27,7 @@ import pandas as pd
 import numpy as np
 
 from core.drive_manager import get_drive_service, download_parquet_as_df
+from core.transformations import BUCKET_POR_CIERRE, REALIZA_ENTREVISTA_CATS, DERIVADO_CATS
 from dashboard_generator import calculate_dni_evolution
 
 # ── Configuración ──────────────────────────────────────────────────────────────
@@ -102,33 +103,10 @@ NIVEL_ORDEN = [
     "Seguimiento",
 ]
 
-# ── Constantes para gráficos ───────────────────────────────────────────────────
+# ── Constantes para gráficos (importadas de transformations — fuente canónica) ──
 
-_REALIZA_ENTREVISTA_CATS = {
-    "traslado efectivo a cis",
-    "acepta cis pero no hay vacante",
-    "se activa protocolo de salud mental",
-    "derivacion a same",
-    "traslado/acompanamiento a otros efectores",
-    "mendicidad (menores de edad)",
-    "derivacion a centro de nnnya",
-    "se realiza entrevista",
-}
-_SE_DERIVA_CATS = {
-    "traslado efectivo a cis",
-    "acepta cis pero no hay vacante",
-    "traslado/acompanamiento a otros efectores",
-}
-_CASOS_SALUD_CATS = {
-    "derivacion a same",
-    "se activa protocolo de salud mental",
-    "imposibilidad de abordaje por consumo",
-}
-_NO_PSC_CATS = {
-    "no se encuentra en situacion de calle",
-    "mendicidad (menores de edad)",
-    "derivacion a centro de nnnya",
-}
+_REALIZA_ENTREVISTA_CATS = REALIZA_ENTREVISTA_CATS
+_DERIVADO_CATS = DERIVADO_CATS
 _DNI_INVALIDOS_STR = {
     "NO BRINDO/NO VISIBLE", "NO BRINDO", "NO VISIBLE", "CONTACTO EXTRANJERO",
     "S/D", "X", "NAN", "nan", "NaN", "", " ", "NONE", "None",
@@ -154,14 +132,13 @@ def mapear_grupo_manual(valor) -> str:
 
 
 def nivel_display(nivel_contacto_val, categoria_final_val) -> str:
-    cat = str(categoria_final_val).strip().lower() if not pd.isna(categoria_final_val) else ""
-    if cat == "sin cubrir":
-        return "Sin cubrir"
     niv = str(nivel_contacto_val).strip() if not pd.isna(nivel_contacto_val) else ""
     if niv == "Se contacta":
         return "Se contacta"
     if niv == "No se contacta":
         return "No se contacta"
+    if niv == "Sin cubrir":
+        return "Sin cubrir"
     if niv == "Desestimado":
         return "Desestimado"
     return "Seguimiento"
@@ -190,26 +167,28 @@ def _es_dni_valido(val) -> bool:
 
 
 def _clasificar_entrevista(cat, dni_val) -> str:
-    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
+    cat_str = str(cat).strip() if not pd.isna(cat) else ""
     if cat_str in _REALIZA_ENTREVISTA_CATS:
         return "Brinda DNI" if _es_dni_valido(dni_val) else "No brinda"
     return "No realiza entrevista"
 
 
 def _clasificar_resultado(cat) -> str:
-    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
-    if cat_str in _SE_DERIVA_CATS:
+    if pd.isna(cat):
+        return "Cierres no identificables"
+    cat_str = str(cat).strip()
+    bucket = BUCKET_POR_CIERRE.get(cat_str)
+    if bucket in ("Traslado efectivo", "Derivación a Umbral Cero"):
         return "Se deriva"
-    if cat_str in _CASOS_SALUD_CATS:
+    if bucket == "Derivación a SAME":
         return "Casos de salud"
-    if cat_str in _NO_PSC_CATS:
-        return "No eran PSC"
-    if cat_str == "rechaza entrevista y se retira del lugar":
+    if bucket in ("Derivación a Seguridad", "Derivación a Ordenamiento Urbano",
+                  "Derivación CNNyA-102", "Mendicidad"):
+        return "Se deriva"
+    if bucket == "Acepta CIS sin vacante":
+        return "Se deriva"
+    if bucket == "Se retira tras entrevista":
         return "Se retira"
-    if cat_str in {"rechaza entrevista y se queda en el lugar", "se realiza entrevista"}:
-        return "Se queda"
-    if cat_str == "derivacion a espacio publico":
-        return "Espacio público"
     return "Cierres no identificables"
 
 
@@ -230,8 +209,8 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df[df["grupo_origen"] != "__excluir__"].copy()
     df["grupo_manual"] = df["Origen"].apply(mapear_grupo_manual)
 
-    # Excluir registros sin categoría válida (sin_match y error de soflex)
-    CATS_EXCLUIR = {"sin_match", "error de soflex"}
+    # Excluir categorías que no se muestran en este reporte
+    CATS_EXCLUIR = {"sin_match", "error de soflex", "POSITIVO", "DERIVACION A RED"}
     antes_cat = len(df)
     df = df[~df["categoria_final"].isin(CATS_EXCLUIR)].copy()
     print(f"   [cat_excluida] {len(df):,} / {antes_cat:,}  (excluidos: {antes_cat-len(df):,})")

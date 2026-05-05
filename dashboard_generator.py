@@ -5,6 +5,7 @@ import json
 import re
 import os
 from data_processor import get_drive_service, download_parquet_as_df
+from core.transformations import REALIZA_ENTREVISTA_CATS, DERIVADO_CATS
 
 # --- CONFIGURACION ---
 FOLDER_ID_DB = '1q7rGJjb3qCTNcyDUYzpn9v4JveLjsk6t'
@@ -18,26 +19,9 @@ AGENCIAS_EXCLUIR = {
     "AREA OPERATIVA", "SALUD MENTAL",
 }
 
-# --- Categorías para análisis de entrevista / resultado final ---
-_REALIZA_ENTREVISTA_CATS = {
-    "traslado efectivo a cis",
-    "acepta cis pero no hay vacante",
-    "se activa protocolo de salud mental",
-    "derivacion a same",
-    "traslado/acompanamiento a otros efectores",
-    "mendicidad (menores de edad)",
-    "derivacion a centro de nnnya",
-    "se realiza entrevista",
-}
-_DERIVADO_CATS = {
-    "traslado efectivo a cis",
-    "acepta cis pero no hay vacante",
-    "se activa protocolo de salud mental",
-    "derivacion a same",
-    "traslado/acompanamiento a otros efectores",
-    "mendicidad (menores de edad)",
-    "derivacion a centro de nnnya",
-}
+# Aliases for local use (imported from transformations — canonical source of truth)
+_REALIZA_ENTREVISTA_CATS = REALIZA_ENTREVISTA_CATS
+_DERIVADO_CATS = DERIVADO_CATS
 _DNI_INVALIDOS_STR = {
     "NO BRINDO/NO VISIBLE", "NO BRINDO", "NO VISIBLE", "CONTACTO EXTRANJERO",
     "S/D", "X", "NAN", "nan", "NaN", "", " ", "NONE", "None",
@@ -49,9 +33,8 @@ _DNI_INVALIDOS_STR = {
 # =============================================================================
 
 def clasificar_contacto(row):
-    """Clasificación estricta de contactos usando categoria_final/nivel_contacto del ETL."""
+    """Clasificación estricta de contactos usando nivel_contacto del ETL."""
     if row.get('estado') == 'PENDIENTE':
-        # Excepcion: zonas priorizadas (C2, Belgrano 13.5, Palermo Norte 14.5) no se marcan 'Sin cubrir'
         c_val = row.get('comuna_calculada')
         es_priorizada = False
         try:
@@ -59,29 +42,24 @@ def clasificar_contacto(row):
                 es_priorizada = True
         except Exception:
             pass
-
         if not es_priorizada:
             return 'Sin cubrir'
-
-    # Usar categoria_final (calculada por el ETL con matching preciso)
-    cat_final = str(row.get('categoria_final', '')).strip().lower()
-    if cat_final == 'sin cubrir':
-        return 'Sin cubrir'
 
     nivel = str(row.get('nivel_contacto', '')).strip()
     if nivel == 'Se contacta':
         return 'Se contacta'
     if nivel in ('No se contacta', 'Desestimado'):
         return 'No se contacta'
-
-    # Fallback al texto crudo para registros sin categoria_final (datos históricos)
-    resultado = str(row.get('resultado', '')).lower()
-    if any(phrase in resultado for phrase in ['no se contacta', 'desestimado']):
-        return 'No se contacta'
-    elif 'sin cubrir' in resultado:
+    if nivel == 'Sin cubrir':
         return 'Sin cubrir'
-    else:
-        return 'Se contacta'
+
+    # Fallback para registros históricos sin nivel_contacto calculado
+    resultado = str(row.get('resultado', '')).lower()
+    if any(phrase in resultado for phrase in ['no se contacta', 'no se observan', 'desestimado']):
+        return 'No se contacta'
+    if 'sin cubrir' in resultado:
+        return 'Sin cubrir'
+    return 'Sin dato'
 
 def calculate_dni_evolution(df_base, target_comuna_id=2):
     # Testing match
@@ -149,22 +127,24 @@ def _es_dni_valido(val) -> bool:
 
 
 def _clasificar_entrevista(cat, dni_val) -> str:
-    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
+    cat_str = str(cat).strip() if not pd.isna(cat) else ""
     if cat_str in _REALIZA_ENTREVISTA_CATS:
         return "Brinda DNI" if _es_dni_valido(dni_val) else "No brinda"
     return "No realiza entrevista"
 
 
 def _clasificar_resultado(cat) -> str:
-    cat_str = str(cat).strip().lower() if not pd.isna(cat) else ""
-    if cat_str in _DERIVADO_CATS:
+    from core.transformations import BUCKET_POR_CIERRE
+    if pd.isna(cat):
+        return "Otros"
+    cat_str = str(cat).strip()
+    bucket = BUCKET_POR_CIERRE.get(cat_str)
+    if bucket in ("Traslado efectivo", "Derivación a Umbral Cero", "Derivación a SAME",
+                  "Derivación a Seguridad", "Derivación a Ordenamiento Urbano",
+                  "Derivación CNNyA-102", "Positivo", "Acepta CIS sin vacante"):
         return "Derivado"
-    if cat_str == "rechaza entrevista y se retira del lugar":
+    if bucket == "Se retira tras entrevista":
         return "Se retira"
-    if cat_str in {"rechaza entrevista y se queda en el lugar", "se realiza entrevista"}:
-        return "Se queda"
-    if cat_str == "derivacion a espacio publico":
-        return "Espacio público"
     return "Otros"
 
 
@@ -203,7 +183,7 @@ def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
     df_c['_res_grupo'] = df_c[COL_CAT].apply(_clasificar_resultado)
 
     ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["Derivado", "Se retira", "Se queda", "Espacio público", "Otros"]
+    RES_GRUPOS = ["Derivado", "Se retira", "Otros"]
 
     result = {'weeks': weeks_str}
 
@@ -265,7 +245,7 @@ def get_stats_data_raw(df_base, comuna_filter_func, base_vals):
 
     df_total_sem = df.groupby('Semana').size().reindex(all_weeks, fill_value=0)
     
-    df_cis = df[df['resultado'] == '01-Traslado efectivo a CIS']
+    df_cis = df[df['categoria_final'] == '01. Traslado efectivo a CIS']
     df_cis_sem = df_cis.groupby('Semana').size().reindex(all_weeks, fill_value=0)
 
     df_auto = df[df['Tipo Carta'] == 'AUTOMATICA']
