@@ -262,9 +262,10 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
             return None
         try:
             f = float(v)
-            if f == 14.5: return "14.5"
-            if f == 13.5: return "13.5"
+            if f == 1.5:  return "1.5"
+            if f == 12.0: return "12"
             if f == 13.0: return "13"
+            if f == 14.0: return "14"
             return str(int(f))
         except Exception:
             return None
@@ -326,7 +327,7 @@ def compute_vals_for_df(df_sub: pd.DataFrame, row_structure: list, semanas) -> l
     return result
 
 
-COMUNAS_DESTACADAS = {"2", "13", "13.5", "14.5"}
+COMUNAS_DESTACADAS = {"1.5", "2", "12", "13", "14"}
 
 def build_all_data(df: pd.DataFrame, row_structure: list, semanas) -> tuple:
     data = {}
@@ -338,12 +339,6 @@ def build_all_data(df: pd.DataFrame, row_structure: list, semanas) -> tuple:
         if not df_c.empty:
             data[c] = compute_vals_for_df(df_c, row_structure, semanas)
             print(f"      Comuna {c}: {len(df_c):,} registros")
-
-    # Comuna 13 completa (13 + 13.5)
-    df_com13 = df[df["comuna_key"].isin({"13", "13.5"})]
-    if not df_com13.empty:
-        data["com13"] = compute_vals_for_df(df_com13, row_structure, semanas)
-        print(f"      Comuna 13 completa (13+13.5): {len(df_com13):,} registros")
 
     df_resto = df[~df["comuna_key"].isin(COMUNAS_DESTACADAS)]
     print(f"   Calculando 'Resto de la ciudad': {len(df_resto):,} registros...")
@@ -421,10 +416,6 @@ def build_all_chart_data(df: pd.DataFrame, global_weeks: list) -> dict:
         df_c = df[df["comuna_key"] == c]
         if not df_c.empty:
             chart_data[c] = compute_contacto_breakdown_weekly(df_c, global_weeks)
-    # Comuna 13 completa (13 + 13.5)
-    df_com13 = df[df["comuna_key"].isin({"13", "13.5"})]
-    if not df_com13.empty:
-        chart_data["com13"] = compute_contacto_breakdown_weekly(df_com13, global_weeks)
     df_resto = df[~df["comuna_key"].isin(COMUNAS_DESTACADAS)]
     chart_data["resto"] = compute_contacto_breakdown_weekly(df_resto, global_weeks)
     return chart_data
@@ -491,14 +482,14 @@ def generar_html(row_structure: list, all_data: dict,
 
     parent_ridx_js = json.dumps([r["parent_ridx"] for r in row_structure])
 
-    options_html = '<option value="todas">Todas las comunas</option>\n'
+    options_html = '<option value="todas">Toda la ciudad</option>\n'
     for c, label in [
-        ("2",     "Comuna 2"),
-        ("com13", "Comuna 13 completa (13 + 13.5)"),
-        ("13",    "Belgrano Norte (solo 13)"),
-        ("13.5",  "Belgrano (solo 13.5)"),
-        ("14.5",  "Palermo Norte (14.5)"),
-        ("resto", "Resto de la ciudad"),
+        ("1.5",  "Comuna 1.5"),
+        ("2",    "Comuna 2"),
+        ("12",   "Comuna 12"),
+        ("13",   "Comuna 13"),
+        ("14",   "Comuna 14"),
+        ("resto","Resto de la ciudad"),
     ]:
         if c in all_data:
             options_html += f'<option value="{c}">{label}</option>\n'
@@ -1287,15 +1278,14 @@ def main():
 
     print(f"\n📊 Calculando evolución DNI por comuna...")
     dni_chart_data = {}
+    dni_chart_data["1.5"]  = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=1.5))
     dni_chart_data["2"]    = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=2))
+    dni_chart_data["12"]   = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=12))
     dni_chart_data["13"]   = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=13))
-    dni_chart_data["13.5"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=13.5))
-    # Comuna 13 completa: combinar 13 + 13.5 filtrando el df directamente
-    df_com13 = df[df["comuna_key"].isin({"13", "13.5"})]
-    dni_chart_data["com13"] = _prepare_dni_chart_json(calculate_dni_evolution(df_com13, target_comuna_id=None))
-    dni_chart_data["14.5"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
+    dni_chart_data["14"]   = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=14))
     dni_chart_data["todas"] = _prepare_dni_chart_json(calculate_dni_evolution(df, target_comuna_id=None))
-    dni_chart_data["resto"] = dni_chart_data["todas"]
+    df_resto = df[~df["comuna_key"].isin(COMUNAS_DESTACADAS)]
+    dni_chart_data["resto"] = _prepare_dni_chart_json(calculate_dni_evolution(df_resto, target_comuna_id=None))
 
     last_update = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
