@@ -62,8 +62,7 @@ FILE_RAW     = "2025_historico_v2.parquet"
 
 ASSETS_DIR    = os.path.join(os.path.dirname(__file__), "assets", "comunas")
 SHP_COMUNAS   = os.path.join(ASSETS_DIR, "comunas.shp")
-KMZ_PALERMO_N = os.path.join(ASSETS_DIR, "Palermo_Norte.kmz")
-KML_BELGRANO  = os.path.join(ASSETS_DIR, "Poligonos Belgrano.kml")
+KML_1A        = os.path.join(ASSETS_DIR, "1 A.kml")
 
 AGENCIAS_EXCLUIR = {
     "DIPA I COMBATE", "MAPA DE RIESGO - SEGUIMIENTO",
@@ -194,15 +193,15 @@ def append_neon_copy(engine, df: pd.DataFrame, table_name: str, chunk_size: int 
 def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
     """
     Asigna comuna_calculada (float) usando spatial join.
-    Prioridad: Palermo Norte (14.5) > SHP comunas (1-15) > NaN
-    FIX: normaliza coma->punto ANTES del join.
+    Prioridad: Zona 1A (1.5) > SHP comunas (1-15) > NaN
+    Comunas 13 y 14 se toman completas via SHP.
     """
-    print("🌍 Geo: calculando comunas...")
+    print("Geo: calculando comunas...")
 
     fiona.drvsupport.supported_drivers["KML"]    = "rw"
     fiona.drvsupport.supported_drivers["LIBKML"] = "rw"
 
-    # Normalizar coordenadas (Estandarizar nombres primero)
+    # Normalizar coordenadas
     cols_map = {c.lower().replace(" ", ""): c for c in df.columns}
     for canonical in ("Latitud", "Longitud"):
         lookup = canonical.lower()
@@ -219,7 +218,7 @@ def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
     mask_geo = df["Latitud"].notna() & df["Longitud"].notna()
 
     if not mask_geo.any():
-        print("   [WARN]  Sin coordenadas vlidas.")
+        print("   [WARN]  Sin coordenadas validas.")
         return df
 
     puntos = gpd.GeoDataFrame(
@@ -230,46 +229,20 @@ def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
         crs="EPSG:4326",
     )
 
-    # Paso 1: Palermo Norte
-    print("   [POINT] Palermo Norte (KMZ)...")
-    with zipfile.ZipFile(KMZ_PALERMO_N) as kmz:
-        kml_name = next(f for f in kmz.namelist() if f.endswith(".kml"))
-        with kmz.open(kml_name) as kml:
-            gdf_pn = gpd.read_file(kml)
-    if puntos.crs != gdf_pn.crs:
-        gdf_pn = gdf_pn.to_crs(puntos.crs)
+    # Paso 1: Zona 1A (subzona priorizada de comuna 1)
+    print("   [POINT] Zona 1A (KML)...")
+    gdf_1a = gpd.read_file(KML_1A)
+    if puntos.crs != gdf_1a.crs:
+        gdf_1a = gdf_1a.to_crs(puntos.crs)
 
-    join_pn  = gpd.sjoin(puntos, gdf_pn[["geometry"]], how="left", predicate="within")
-    mask_pn  = join_pn["index_right"].notna().values
-    idx_geo  = df[mask_geo].index
-    df.loc[idx_geo[mask_pn], "comuna_calculada"] = 14.5
-    print(f"      Palermo Norte: {mask_pn.sum():,}")
-    del join_pn, gdf_pn; gc.collect()
+    join_1a = gpd.sjoin(puntos, gdf_1a[["geometry"]], how="left", predicate="within")
+    mask_1a = join_1a["index_right"].notna().values
+    idx_geo = df[mask_geo].index
+    df.loc[idx_geo[mask_1a], "comuna_calculada"] = 1.5
+    print(f"      Zona 1A: {mask_1a.sum():,}")
+    del join_1a, gdf_1a; gc.collect()
 
-    # Paso 1b: Belgrano (solo los sin clasificar por Palermo Norte)
-    print("   [POINT] Belgrano (KML)...")
-    fiona.drvsupport.supported_drivers["KML"]    = "rw"
-    fiona.drvsupport.supported_drivers["LIBKML"] = "rw"
-    gdf_bg = gpd.read_file(KML_BELGRANO)
-    if puntos.crs != gdf_bg.crs:
-        gdf_bg = gdf_bg.to_crs(puntos.crs)
-
-    mask_sin_bg = mask_geo & df["comuna_calculada"].isna()
-    if mask_sin_bg.any():
-        df_sin_bg = df[mask_sin_bg].copy()
-        puntos_sin_bg = gpd.GeoDataFrame(
-            df_sin_bg,
-            geometry=gpd.points_from_xy(df_sin_bg["Longitud"], df_sin_bg["Latitud"]),
-            crs="EPSG:4326",
-        )
-        join_bg = gpd.sjoin(puntos_sin_bg, gdf_bg[["geometry"]], how="left", predicate="within")
-        join_bg = join_bg[~join_bg.index.duplicated(keep="first")]
-        mask_bg = join_bg["index_right"].notna()
-        df.loc[mask_bg[mask_bg].index, "comuna_calculada"] = 13.5
-        print(f"      Belgrano: {mask_bg.sum():,}")
-    del gdf_bg; gc.collect()
-
-    # Paso 2: SHP comunas (solo los sin clasificar)
+    # Paso 2: SHP comunas (todos los sin clasificar, incluye 13 y 14 completas)
     print("   [POINT] SHP comunas...")
     gdf_com = gpd.read_file(SHP_COMUNAS)
     if puntos.crs != gdf_com.crs:
@@ -286,19 +259,17 @@ def calcular_comunas(df: pd.DataFrame) -> pd.DataFrame:
         join_com = gpd.sjoin(
             puntos_sin, gdf_com[["comuna", "geometry"]], how="left", predicate="within"
         )
-        # Deduplicar ndice (puntos en borde de dos polgonos)
         join_com = join_com[~join_com.index.duplicated(keep="first")]
         df.loc[mask_sin, "comuna_calculada"] = join_com["comuna"].values
 
     del gdf_com, puntos; gc.collect()
 
-    # Normalizar a float cannico
+    # Normalizar a float canonico
     df["comuna_calculada"] = df["comuna_calculada"].apply(normalizar_comuna)
 
-    print(f"   [OK] Palermo Norte (14.5): {(df['comuna_calculada'] == 14.5).sum():,}")
-    print(f"   [OK] Belgrano (13.5):      {(df['comuna_calculada'] == 13.5).sum():,}")
-    print(f"   [OK] Comunas 1-15:         {df['comuna_calculada'].between(1,15).sum():,}")
-    print(f"   [WARN]  Sin comuna:           {df['comuna_calculada'].isna().sum():,}")
+    print(f"   [OK] Zona 1A (1.5):  {(df['comuna_calculada'] == 1.5).sum():,}")
+    print(f"   [OK] Comunas 1-15:   {df['comuna_calculada'].between(1, 15).sum():,}")
+    print(f"   [WARN]  Sin comuna:    {df['comuna_calculada'].isna().sum():,}")
     return df
 
 

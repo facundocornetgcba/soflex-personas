@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .venv/
 .env
+.planning
 
 # Credenciales y tokens (nunca al repo)
 credentials.json

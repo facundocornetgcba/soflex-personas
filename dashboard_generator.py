@@ -55,7 +55,7 @@ def clasificar_contacto(row):
         c_val = row.get('comuna_calculada')
         es_priorizada = False
         try:
-            if float(c_val) in (2.0, 13.5, 14.5):
+            if float(c_val) in (2.0, 13.0, 14.0, 1.5):
                 es_priorizada = True
         except Exception:
             pass
@@ -355,7 +355,7 @@ def main(df_externo=None):
     # Base Total (Antiguamente Resto - Solicitado usar esta base para Total)
     base_total = ["4344", "341", "2798", "27% (782)", "25% (717)", "46% (1299)"]
 
-    ZONAS_PRIORIZADAS = {2.0, 13.5, 14.5}
+    ZONAS_PRIORIZADAS = {2.0, 13.0, 14.0, 1.5}
 
     # Zonas priorizadas
     all_data['c2'] = get_stats_data_raw(
@@ -363,18 +363,23 @@ def main(df_externo=None):
         lambda d: d[d['comuna_calculada'] == 2],
         base_c2
     )
-    all_data['belgrano'] = get_stats_data_raw(
+    all_data['c13'] = get_stats_data_raw(
         df,
-        lambda d: d[d['comuna_calculada'] == 13.5],
+        lambda d: d[d['comuna_calculada'] == 13],
         base_dummy
     )
-    all_data['palermo_norte'] = get_stats_data_raw(
+    all_data['c14'] = get_stats_data_raw(
         df,
-        lambda d: d[d['comuna_calculada'] == 14.5],
+        lambda d: d[d['comuna_calculada'] == 14],
+        base_dummy
+    )
+    all_data['zona1a'] = get_stats_data_raw(
+        df,
+        lambda d: d[d['comuna_calculada'] == 1.5],
         base_dummy
     )
 
-    # Resto de la ciudad (todo lo que NO es 2, 13.5, 14.5)
+    # Resto de la ciudad (todo lo que NO es zona priorizada)
     all_data['resto'] = get_stats_data_raw(
         df,
         lambda d: d[~d['comuna_calculada'].isin(ZONAS_PRIORIZADAS)],
@@ -397,8 +402,9 @@ def main(df_externo=None):
     print(" Calculando evolucin DNI para zonas priorizadas...")
     all_chart_data = {}
     all_chart_data['c2'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=2))
-    all_chart_data['belgrano'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=13.5))
-    all_chart_data['palermo_norte'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=14.5))
+    all_chart_data['c13'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=13))
+    all_chart_data['c14'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=14))
+    all_chart_data['zona1a'] = prepare_chart_json(calculate_dni_evolution(df, target_comuna_id=1.5))
 
     # Resto: excluir zonas priorizadas
     df_resto_chart = df[~df['comuna_calculada'].isin(ZONAS_PRIORIZADAS)].copy()
@@ -485,11 +491,12 @@ def main(df_externo=None):
     # 2. Contenedores de Tablas
     def build_container_html(container_id, title, default_key):
         zona_opts = [
-            ("c2",           "Comuna 2"),
-            ("belgrano",     "Belgrano (13.5)"),
-            ("palermo_norte","Palermo Norte (14.5)"),
-            ("resto",        "Resto de la ciudad"),
-            ("total",        "Total Ciudad"),
+            ("c2",      "Comuna 2"),
+            ("c13",     "Comuna 13"),
+            ("c14",     "Comuna 14"),
+            ("zona1a",  "Zona 1A"),
+            ("resto",   "Resto de la ciudad"),
+            ("total",   "Total Ciudad"),
         ]
         opts = ""
         for key, label in zona_opts:
@@ -563,8 +570,9 @@ def main(df_externo=None):
         // ETIQUETA LEGIBLE POR CLAVE
         function getComLabel(key) {{
             if (key === 'total') return 'Total Ciudad';
-            if (key === 'palermo_norte') return 'Palermo Norte (14.5)';
-            if (key === 'belgrano') return 'Belgrano (13.5)';
+            if (key === 'c14') return 'Comuna 14';
+            if (key === 'c13') return 'Comuna 13';
+            if (key === 'zona1a') return 'Zona 1A';
             if (key === 'resto') return 'Resto de la ciudad';
             if (key === 'c2') return 'Comuna 2';
             return 'Comuna ' + key.replace('c', '');
