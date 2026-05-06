@@ -62,8 +62,6 @@ def clasificar_contacto(row):
     return 'Sin dato'
 
 def calculate_dni_evolution(df_base, target_comuna_id=2):
-    # Testing match
-    # Step 2: New logic starts here
     COL_FECHA = "Fecha Inicio"
     COL_DNI = "DNI_categorizado"
     COL_COMUNA = "comuna_calculada"
@@ -136,16 +134,9 @@ def _clasificar_entrevista(cat, dni_val) -> str:
 def _clasificar_resultado(cat) -> str:
     from core.transformations import BUCKET_POR_CIERRE
     if pd.isna(cat):
-        return "Otros"
+        return "Cierres no identificables"
     cat_str = str(cat).strip()
-    bucket = BUCKET_POR_CIERRE.get(cat_str)
-    if bucket in ("Traslado efectivo", "Derivación a Umbral Cero", "Derivación a SAME",
-                  "Derivación a Seguridad", "Derivación a Ordenamiento Urbano",
-                  "Derivación CNNyA-102", "Positivo", "Acepta CIS sin vacante"):
-        return "Derivado"
-    if bucket == "Se retira tras entrevista":
-        return "Se retira"
-    return "Otros"
+    return BUCKET_POR_CIERRE.get(cat_str, "Cierres no identificables")
 
 
 def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
@@ -183,7 +174,8 @@ def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
     df_c['_res_grupo'] = df_c[COL_CAT].apply(_clasificar_resultado)
 
     ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["Derivado", "Se retira", "Otros"]
+    RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA",
+                  "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"]
 
     result = {'weeks': weeks_str}
 
@@ -211,6 +203,46 @@ def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
         result[f'{key}_resultado'] = res_counts
 
     return result
+
+
+_CIERRE_BUCKETS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA", "ESPACIO PUBLICO",
+                   "ACEPTA CIS SIN VACANTE", "MENDICIDAD", "Cierres no identificables"]
+_CIERRE_COLORS  = ["#10B981", "#EF4444", "#3B82F6", "#F59E0B", "#8B5CF6", "#EC4899", "#9CA3AF"]
+
+
+def compute_cierres_breakdown_weekly(df_zona, n_semanas=8):
+    """Breakdown por bucket PPT de los registros Se contacta, últimas n semanas."""
+    from core.transformations import BUCKET_POR_CIERRE
+
+    all_weeks = sorted(
+        df_zona['Fecha Inicio'].dt.to_period('W-SUN').dt.start_time.unique()
+    )[-n_semanas:]
+    weeks_str = [w.strftime('%d %b').replace('.', '').title() for w in all_weeks]
+
+    df = df_zona[df_zona['nivel_contacto'] == 'Se contacta'].copy()
+    if df.empty:
+        return {
+            'labels': weeks_str,
+            'datasets': [{'label': b, 'data': [0] * n_semanas, 'backgroundColor': c}
+                         for b, c in zip(_CIERRE_BUCKETS, _CIERRE_COLORS)]
+        }
+
+    df['Semana'] = df['Fecha Inicio'].dt.to_period('W-SUN').dt.start_time
+    df['_bucket'] = df['categoria_final'].apply(
+        lambda c: BUCKET_POR_CIERRE.get(str(c).strip(), 'Cierres no identificables')
+        if pd.notna(c) else 'Cierres no identificables'
+    )
+
+    datasets = []
+    for bucket, color in zip(_CIERRE_BUCKETS, _CIERRE_COLORS):
+        weekly = (
+            df[df['_bucket'] == bucket]
+            .groupby('Semana').size()
+            .reindex(all_weeks, fill_value=0)
+        )
+        datasets.append({'label': bucket, 'data': [int(v) for v in weekly], 'backgroundColor': color})
+
+    return {'labels': weeks_str, 'datasets': datasets}
 
 
 # =============================================================================
@@ -394,6 +426,17 @@ def main(df_externo=None):
     # Alias para referencia de fecha en el header
     chart_json_c2 = all_chart_data['c2']
 
+    print(" Calculando breakdown de cierres por zona...")
+    _zona_dfs = {
+        'c2':     df[df['comuna_calculada'] == 2],
+        'c13':    df[df['comuna_calculada'] == 13],
+        'c14':    df[df['comuna_calculada'] == 14],
+        'zona1a': df[df['comuna_calculada'] == 1.5],
+        'resto':  df[~df['comuna_calculada'].isin(ZONAS_PRIORIZADAS)],
+        'total':  df,
+    }
+    all_cierres_data = {k: compute_cierres_breakdown_weekly(v) for k, v in _zona_dfs.items()}
+
     print(f" Generando HTML Interactivo...")
     
     with open(TEMPLATE_HTML_PATH, 'r', encoding='utf-8') as f:
@@ -539,12 +582,14 @@ def main(df_externo=None):
     # 4. Lgica JS
     json_all = json.dumps(all_data)
     json_all_charts = json.dumps(all_chart_data)
+    json_all_cierres = json.dumps(all_cierres_data)
 
     js_logic = f'''
     <script>
         // DATOS GLOBALES
         const allComunaData = {json_all};
         const allChartData = {json_all_charts};
+        const allCierresData = {json_all_cierres};
         const chartInstances = {{}};
 
         // ETIQUETA LEGIBLE POR CLAVE
@@ -648,15 +693,105 @@ def main(df_externo=None):
             }});
         }}
 
-        // INICIALIZACIN
-        renderTable('table1', 'c2');
-        renderTable('table2', 'total');
+        // GRAFICO CIERRES
+        let cierresChartInstance = null;
+
+        function renderCierresChart(key) {{
+            const data = allCierresData[key];
+            if (!data) return;
+
+            const titleEl = document.getElementById('cierresChartTitle');
+            if (titleEl) titleEl.textContent = 'Cierres por tipo (Se contacta) - ' + getComLabel(key);
+
+            if (cierresChartInstance) {{
+                cierresChartInstance.destroy();
+                cierresChartInstance = null;
+            }}
+
+            if (typeof ChartDataLabels !== 'undefined') {{
+                Chart.register(ChartDataLabels);
+            }}
+
+            const ctx = document.getElementById('cierresChart').getContext('2d');
+            cierresChartInstance = new Chart(ctx, {{
+                type: 'bar',
+                data: data,
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        x: {{ stacked: true, grid: {{ display: false }} }},
+                        y: {{ stacked: true, beginAtZero: true }}
+                    }},
+                    plugins: {{
+                        legend: {{ position: 'top' }},
+                        tooltip: {{ mode: 'index', intersect: false }},
+                        datalabels: {{
+                            color: 'white',
+                            font: {{ weight: 'bold', size: 9 }},
+                            formatter: (value) => value > 0 ? value : ''
+                        }}
+                    }}
+                }},
+                plugins: [{{
+                    id: 'cierresTotals',
+                    afterDatasetsDraw: (chart) => {{
+                        const ctx = chart.ctx;
+                        chart.data.labels.forEach((label, index) => {{
+                            let total = 0;
+                            chart.data.datasets.forEach(ds => total += ds.data[index]);
+                            if (total > 0) {{
+                                const meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
+                                const x = meta.data[index].x;
+                                const y = meta.data[index].y;
+                                ctx.fillStyle = 'black';
+                                ctx.font = 'bold 11px Inter';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(total, x, y - 5);
+                            }}
+                        }});
+                    }}
+                }}]
+            }});
+        }}
+
+        // INICIALIZACIÓN
+        document.addEventListener('DOMContentLoaded', function() {{
+            renderTable('table1', 'c2');
+            renderTable('table2', 'total');
+            renderCierresChart('total');
+        }});
 
     </script>
     '''
 
     # Usamos replace del bloque script final
     html = re.sub(r'<script>\s*// Datos inyectados desde Python.*?</script>', js_logic, html, flags=re.DOTALL)
+
+    # SECCION 3: grafico de cierres por tipo PPT
+    zona_opts_cierres = ''.join(
+        f'<option value="{k}" {"selected" if k == "total" else ""}>{l}</option>'
+        for k, l in [("c2","Comuna 2"),("c13","Comuna 13"),("c14","Comuna 14"),
+                     ("zona1a","Zona 1A"),("resto","Resto de la ciudad"),("total","Total Ciudad")]
+    )
+    seccion3_html = f'''
+        <!-- SECCION 3: CIERRES -->
+        <section class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+            <div class="flex justify-between items-center mb-6 border-b pb-2">
+                <h2 id="cierresChartTitle" class="text-xl font-bold text-gray-800">
+                    Cierres por tipo (Se contacta) - Total Ciudad
+                </h2>
+                <select class="text-xs text-gray-800 border border-gray-300 p-1 rounded cursor-pointer focus:outline-none"
+                        onchange="renderCierresChart(this.value)">
+                    {zona_opts_cierres}
+                </select>
+            </div>
+            <div class="relative h-96 w-full">
+                <canvas id="cierresChart"></canvas>
+            </div>
+        </section>
+    '''
+    html = html.replace('</main>', seccion3_html + '\n    </main>')
 
     # Info Header
     html = re.sub(r'Actualizado: .*?</div>', f'Actualizado: {last_update}</div>', html)

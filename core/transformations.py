@@ -18,15 +18,7 @@ from rapidfuzz import process, fuzz
 # ==========================================
 
 def limpiar_texto(nombre):
-    """
-    Limpia y normaliza nombres y apellidos.
-    
-    Args:
-        nombre: Input text to clean
-        
-    Returns:
-        str or None: Cleaned text in uppercase, or None if invalid
-    """
+    """Limpia y normaliza nombres y apellidos."""
     if pd.isna(nombre): 
         return None
     nombre = str(nombre).upper()
@@ -38,15 +30,7 @@ def limpiar_texto(nombre):
 
 
 def limpiar_texto_cierre(s):
-    """
-    Limpia texto de categoras de cierre para matching.
-    
-    Args:
-        s: Input text to clean
-        
-    Returns:
-        str: Cleaned text in lowercase
-    """
+    """Normaliza texto de cierre para matching: lowercase, sin acentos, sin guiones."""
     if pd.isna(s): 
         return ""
     s = str(s).lower().strip()
@@ -79,18 +63,7 @@ PATRON_SOLO_LETRAS = re.compile(r'^[A-Za-z]+$')
 
 
 def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crear_motivo=True):
-    """
-    Limpia y categoriza valores de DNI segn reglas especficas.
-    
-    Args:
-        df (pd.DataFrame): DataFrame to process
-        columna_original (str): Name of the column with DNI values
-        columna_salida (str, optional): Name of the output column. Defaults to columna_original
-        crear_motivo (bool): Whether to create a column with categorization reason
-        
-    Returns:
-        pd.DataFrame: DataFrame with cleaned DNI column
-    """
+    """Limpia y categoriza DNI: numérico válido, NO BRINDO/NO VISIBLE, CONTACTO EXTRANJERO."""
     if columna_salida is None: 
         columna_salida = columna_original
     motivo_col = f"{columna_salida}_motivo" if crear_motivo else None
@@ -136,7 +109,8 @@ def limpiar_y_categorizar_dni_v3(df, columna_original, columna_salida=None, crea
 # CATEGORIZATION OF INTERVENTION OUTCOMES
 # ==========================================
 
-# Canonical new values — single source of truth
+# Canonical new values — single source of truth (vigente desde 01/05/2026)
+# DERIVACION A RED, DERIVACION AREA CNNyA-102 y POSITIVO eliminados del sistema Soflex.
 CATEGORIAS_NUEVAS = [
     "01. Traslado efectivo a CIS",
     "02. Traslado efectivo a DIPA",
@@ -155,9 +129,6 @@ CATEGORIAS_NUEVAS = [
     "18. Mendicidad",
     "19. Sin cubrir",
     "20. Desestimado",
-    "DERIVACION A RED",
-    "DERIVACION AREA CNNyA-102",
-    "POSITIVO",
 ]
 
 # Nivel de contacto por categoria canónica
@@ -175,40 +146,34 @@ NIVEL_POR_CIERRE = {
     "14. Derivación a Seguridad":                                    "Se contacta",
     "15. Derivación a Ordenamiento Urbano":                          "Se contacta",
     "18. Mendicidad":                                                "Se contacta",
-    "DERIVACION AREA CNNyA-102":                                     "Se contacta",
-    "POSITIVO":                                                      "Se contacta",
     "16. No se observan personas y hay pertenencias":                "No se contacta",
     "17. No se observan personas ni pertenencias":                   "No se contacta",
-    "DERIVACION A RED":                                              "No se contacta",
     "19. Sin cubrir":                                                "Sin cubrir",
     "20. Desestimado":                                               "Desestimado",
 }
 
-# Bucket de reporte por categoria canónica
+# Bucket de reporte por categoria canónica — etiquetas PPT
 BUCKET_POR_CIERRE = {
-    "01. Traslado efectivo a CIS":                                   "Traslado efectivo",
-    "02. Traslado efectivo a DIPA":                                  "Traslado efectivo",
-    "03. Traslado efectivo a Micro":                                 "Traslado efectivo",
-    "05. Traslado efectivo a lugar de origen":                       "Traslado efectivo",
-    "06. Acepta CIS pero no hay vacante":                            "Acepta CIS sin vacante",
-    "07. Se realiza entrevista y se retira del lugar":               "Se retira tras entrevista",
-    "08. No se realiza entrevista y se retira del lugar":            "Se retira tras entrevista",
-    "09. Derivación al equipo de Umbral Cero de Primer Abordaje":   "Derivación a Umbral Cero",
-    "12. Derivación a SAME por deterioro físico visible":            "Derivación a SAME",
-    "13. Derivación a SAME por salud mental":                        "Derivación a SAME",
-    "14. Derivación a Seguridad":                                    "Derivación a Seguridad",
-    "15. Derivación a Ordenamiento Urbano":                          "Derivación a Ordenamiento Urbano",
-    "16. No se observan personas y hay pertenencias":                "No se observan personas",
-    "17. No se observan personas ni pertenencias":                   "No se observan personas",
-    "18. Mendicidad":                                                "Mendicidad",
-    "19. Sin cubrir":                                                "Sin cubrir",
-    "20. Desestimado":                                               "Desestimado",
-    "DERIVACION A RED":                                              "Derivación a RED",
-    "DERIVACION AREA CNNyA-102":                                     "Derivación CNNyA-102",
-    "POSITIVO":                                                      "Positivo",
+    "01. Traslado efectivo a CIS":                                   "SE DERIVA",
+    "02. Traslado efectivo a DIPA":                                  "SE DERIVA",
+    "03. Traslado efectivo a Micro":                                 "SE DERIVA",
+    "05. Traslado efectivo a lugar de origen":                       "SE DERIVA",
+    "06. Acepta CIS pero no hay vacante":                            "ACEPTA CIS SIN VACANTE",
+    "07. Se realiza entrevista y se retira del lugar":               "SE RETIRA",
+    "08. No se realiza entrevista y se retira del lugar":            "SE RETIRA",
+    "09. Derivación al equipo de Umbral Cero de Primer Abordaje":   "SE DERIVA",
+    "12. Derivación a SAME por deterioro físico visible":            "CASOS DE SALUD MENTAL",
+    "13. Derivación a SAME por salud mental":                        "CASOS DE SALUD MENTAL",
+    "14. Derivación a Seguridad":                                    "SE DERIVA",
+    "15. Derivación a Ordenamiento Urbano":                          "ESPACIO PUBLICO",
+    "16. No se observan personas y hay pertenencias":                "NO SE CONTACTA",
+    "17. No se observan personas ni pertenencias":                   "NO SE CONTACTA",
+    "18. Mendicidad":                                                "MENDICIDAD",
+    "19. Sin cubrir":                                                "SIN CUBRIR",
+    "20. Desestimado":                                               "DESESTIMADO",
 }
 
-# Sets para breakdown de entrevista (gráficos de dashboard/reporte)
+# Sets para breakdown de entrevista — solo cierres con interacción directa que solicita DNI
 REALIZA_ENTREVISTA_CATS = {
     "01. Traslado efectivo a CIS",
     "02. Traslado efectivo a DIPA",
@@ -217,13 +182,7 @@ REALIZA_ENTREVISTA_CATS = {
     "06. Acepta CIS pero no hay vacante",
     "07. Se realiza entrevista y se retira del lugar",
     "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "12. Derivación a SAME por deterioro físico visible",
-    "13. Derivación a SAME por salud mental",
-    "14. Derivación a Seguridad",
-    "15. Derivación a Ordenamiento Urbano",
     "18. Mendicidad",
-    "DERIVACION AREA CNNyA-102",
-    "POSITIVO",
 }
 
 DERIVADO_CATS = {
@@ -236,8 +195,6 @@ DERIVADO_CATS = {
     "13. Derivación a SAME por salud mental",
     "14. Derivación a Seguridad",
     "15. Derivación a Ordenamiento Urbano",
-    "DERIVACION AREA CNNyA-102",
-    "POSITIVO",
 }
 
 # Sets para obtener_niveles() — columnas contacto / brinda_datos
@@ -253,8 +210,6 @@ SE_CONTACTA_BRINDA_DATOS = {
     "14. Derivación a Seguridad",
     "15. Derivación a Ordenamiento Urbano",
     "18. Mendicidad",
-    "DERIVACION AREA CNNyA-102",
-    "POSITIVO",
 }
 SE_CONTACTA_NO_BRINDA_DATOS = {
     "07. Se realiza entrevista y se retira del lugar",
@@ -263,7 +218,6 @@ SE_CONTACTA_NO_BRINDA_DATOS = {
 NO_CONTACTA_SET = {
     "16. No se observan personas y hay pertenencias",
     "17. No se observan personas ni pertenencias",
-    "DERIVACION A RED",
 }
 
 # Mapa viejo→nuevo (Tier 0): clave = limpiar_texto_cierre(valor_viejo_o_nuevo)
@@ -299,9 +253,16 @@ MAPEO_VIEJO_A_NUEVO = {
     "18 mendicidad":                                       "18. Mendicidad",
     "19 sin cubrir":                                       "19. Sin cubrir",
     "20 desestimado":                                      "20. Desestimado",
-    "derivacion a red":                                    "DERIVACION A RED",
-    "derivacion area cnnya 102":                           "DERIVACION AREA CNNyA-102",
-    "positivo":                                            "POSITIVO",
+    "derivacion a red":                                    "error de soflex",
+    "derivacion area cnnya 102":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "11 derivacion area cnnya 102":                        "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "positivo":                                            "sin_match",
+    # --- Legacy sin mapeo previo → proxy canónico ---
+    "06 se realiza entrevista":                            "08. No se realiza entrevista y se retira del lugar",
+    "09 rechaza entrevista y se queda en el lugar":        "08. No se realiza entrevista y se retira del lugar",
+    "04 traslado acompanamiento a otros efectores":        "01. Traslado efectivo a CIS",
+    "04 traslado efectivo 690":                            "01. Traslado efectivo a CIS",
+    "derivacion a ep":                                     "15. Derivación a Ordenamiento Urbano",
 }
 
 # Exact match para códigos compuestos del sistema DIPA (Tier 1)
@@ -310,13 +271,13 @@ PATRONES_EXACTOS = {
     "01 positivo traslado a cis hogar 08 positivo derivacion a sas cud cp identidad etc":                  "01. Traslado efectivo a CIS",
     "10 se contacta pero rechaza pp por desconocimiento voluntad etc":                                      "08. No se realiza entrevista y se retira del lugar",
     "21 asesoramiento sobre programas":                                                                     "07. Se realiza entrevista y se retira del lugar",
-    "16 dipa entrega de insumos servicios 21 asesoramiento sobre programas":                               "POSITIVO",
-    "16 dipa entrega de insumos servicios 7 positivo entrega de insumos":                                  "POSITIVO",
-    "21 asesoramiento sobre programas 16 dipa entrega de insumos servicios":                               "POSITIVO",
-    "7 positivo entrega de insumos 16 dipa entrega de insumos servicios":                                  "POSITIVO",
-    "7 positivo entrega de insumos 21 asesoramiento sobre programas":                                      "POSITIVO",
-    "21 asesoramiento sobre programas 7 positivo entrega de insumos":                                      "POSITIVO",
-    "16 dipa entrega de insumos servicios 21 asesoramiento sobre programas 7 positivo entrega de insumos": "POSITIVO",
+    "16 dipa entrega de insumos servicios 21 asesoramiento sobre programas":                               "sin_match",
+    "16 dipa entrega de insumos servicios 7 positivo entrega de insumos":                                  "sin_match",
+    "21 asesoramiento sobre programas 16 dipa entrega de insumos servicios":                               "sin_match",
+    "7 positivo entrega de insumos 16 dipa entrega de insumos servicios":                                  "sin_match",
+    "7 positivo entrega de insumos 21 asesoramiento sobre programas":                                      "sin_match",
+    "21 asesoramiento sobre programas 7 positivo entrega de insumos":                                      "sin_match",
+    "16 dipa entrega de insumos servicios 21 asesoramiento sobre programas 7 positivo entrega de insumos": "sin_match",
     "11 se contacta pero rechaza pp por disconformidad egresado":                                          "08. No se realiza entrevista y se retira del lugar",
     "10 se contacta pero rechaza pp por desconocimiento voluntad etc 11 se contacta pero rechaza pp por disconformidad egresado": "08. No se realiza entrevista y se retira del lugar",
     "9 se contacta pero rechaza entrevista 21 asesoramiento sobre programas":                              "08. No se realiza entrevista y se retira del lugar",
@@ -354,12 +315,12 @@ PATRONES_PERSONALIZADOS = {
     "mendicidad":                      "18. Mendicidad",
     "sin cubrir":                      "19. Sin cubrir",
     "desestimado":                     "20. Desestimado",
-    "derivacion a red":                "DERIVACION A RED",
-    "derivacion area cnnya":           "DERIVACION AREA CNNyA-102",
-    "cnnya":                           "DERIVACION AREA CNNyA-102",
-    "cnnva":                           "DERIVACION AREA CNNyA-102",
-    "nnnya":                           "DERIVACION AREA CNNyA-102",
-    "nnya 102":                        "DERIVACION AREA CNNyA-102",
+    "derivacion a red":                "error de soflex",
+    "derivacion area cnnya":           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "cnnya":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "cnnva":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "nnnya":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "nnya 102":                        "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
     "seguridad":                       "14. Derivación a Seguridad",
 }
 
@@ -369,15 +330,7 @@ _CATS_LIMPIAS_LIST = list(_CATS_LIMPIAS.keys())
 
 
 def mapear_categoria_con_reglas(texto):
-    """
-    Maps intervention outcome text to canonical new category using 4-tier approach:
-    0. Direct lookup in MAPEO_VIEJO_A_NUEVO (covers both old and new exact values)
-    1. Exact match in PATRONES_EXACTOS (DIPA combo codes)
-    2. Substring match in PATRONES_PERSONALIZADOS
-    3. Fuzzy match against canonical list (WRatio >= 80)
-
-    Returns canonical category string or "sin_match".
-    """
+    """Tier 0: MAPEO_VIEJO_A_NUEVO → Tier 1: PATRONES_EXACTOS → Tier 2: substring → Tier 3: fuzzy ≥80."""
     if pd.isna(texto):
         return "sin_match"
     texto = str(texto).strip()
@@ -403,12 +356,7 @@ def mapear_categoria_con_reglas(texto):
 
 
 def obtener_niveles(cat):
-    """
-    Returns (contact_level, data_level) for a canonical category.
-
-    Returns:
-        tuple: (contact_level, data_level)
-    """
+    """Devuelve (nivel_contacto_texto, brinda_datos_texto) para columnas ETL."""
     if cat in SE_CONTACTA_BRINDA_DATOS:
         return "Contacta", "Brinda datos"
     if cat in SE_CONTACTA_NO_BRINDA_DATOS:
@@ -427,12 +375,7 @@ def obtener_niveles(cat):
 # ==========================================
 
 def obtener_nivel_contacto(cat):
-    """
-    Maps a categoria_final to a high-level contact status.
-
-    Returns one of: "Se contacta", "No se contacta", "Sin cubrir",
-                    "Desestimado", "Sin dato"
-    """
+    """Mapea categoria_final al nivel de contacto de alto nivel via NIVEL_POR_CIERRE."""
     if pd.isna(cat):
         return "Sin dato"
     cat_str = str(cat).strip()

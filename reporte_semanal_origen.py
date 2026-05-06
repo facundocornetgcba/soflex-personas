@@ -131,16 +131,19 @@ def mapear_grupo_manual(valor) -> str:
     return ORIGEN_A_GRUPO_MANUAL.get(s, "Otros")
 
 
-def nivel_display(nivel_contacto_val, categoria_final_val) -> str:
+COMUNAS_PRIORIZADAS = {2.0, 13.0, 14.0, 1.5}
+
+def nivel_display(nivel_contacto_val, categoria_final_val, estado_val=None, comuna_val=None) -> str:
+    estado = str(estado_val).strip().upper() if estado_val is not None and not pd.isna(estado_val) else ""
+    if estado == "PENDIENTE":
+        try:
+            if float(comuna_val) not in COMUNAS_PRIORIZADAS:
+                return "Sin cubrir"
+        except Exception:
+            return "Sin cubrir"
     niv = str(nivel_contacto_val).strip() if not pd.isna(nivel_contacto_val) else ""
-    if niv == "Se contacta":
-        return "Se contacta"
-    if niv == "No se contacta":
-        return "No se contacta"
-    if niv == "Sin cubrir":
-        return "Sin cubrir"
-    if niv == "Desestimado":
-        return "Desestimado"
+    if niv in ("Se contacta", "No se contacta", "Sin cubrir", "Desestimado"):
+        return niv
     return "Seguimiento"
 
 
@@ -178,18 +181,9 @@ def _clasificar_resultado(cat) -> str:
         return "Cierres no identificables"
     cat_str = str(cat).strip()
     bucket = BUCKET_POR_CIERRE.get(cat_str)
-    if bucket in ("Traslado efectivo", "Derivación a Umbral Cero"):
-        return "Se deriva"
-    if bucket == "Derivación a SAME":
-        return "Casos de salud"
-    if bucket in ("Derivación a Seguridad", "Derivación a Ordenamiento Urbano",
-                  "Derivación CNNyA-102", "Mendicidad"):
-        return "Se deriva"
-    if bucket == "Acepta CIS sin vacante":
-        return "Se deriva"
-    if bucket == "Se retira tras entrevista":
-        return "Se retira"
-    return "Cierres no identificables"
+    if bucket is None:
+        return "Cierres no identificables"
+    return bucket
 
 
 # ── Preparación del DataFrame ──────────────────────────────────────────────────
@@ -209,10 +203,23 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df[df["grupo_origen"] != "__excluir__"].copy()
     df["grupo_manual"] = df["Origen"].apply(mapear_grupo_manual)
 
-    # Excluir categorías que no se muestran en este reporte
-    CATS_EXCLUIR = {"sin_match", "error de soflex", "POSITIVO", "DERIVACION A RED"}
+    # nivel_norm antes de filtrar: la regla PENDIENTE+no priorizada→Sin cubrir
+    # necesita ver esas filas antes de que CATS_EXCLUIR las descarte
+    df["nivel_norm"] = df.apply(
+        lambda r: nivel_display(
+            r.get("nivel_contacto"), r.get("categoria_final"),
+            r.get("Estado"), r.get("comuna_calculada"),
+        ),
+        axis=1
+    )
+
+    # Excluir categorías no reportables, preservando sin_match rescatados como Sin cubrir
+    CATS_EXCLUIR_SIEMPRE = {"error de soflex", "POSITIVO", "DERIVACION A RED"}
     antes_cat = len(df)
-    df = df[~df["categoria_final"].isin(CATS_EXCLUIR)].copy()
+    mask_excluir = df["categoria_final"].isin(CATS_EXCLUIR_SIEMPRE) | (
+        (df["categoria_final"] == "sin_match") & (df["nivel_norm"] != "Sin cubrir")
+    )
+    df = df[~mask_excluir].copy()
     print(f"   [cat_excluida] {len(df):,} / {antes_cat:,}  (excluidos: {antes_cat-len(df):,})")
 
     # Deduplicar por id suceso (queda el primer registro por suceso único)
@@ -231,10 +238,6 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
             print(f"   [dedup_id]    COLUMNA NO ENCONTRADA. Columnas disponibles: {list(df.columns)}")
 
     df["tipo_carta_norm"] = df["Tipo Carta"].str.upper().str.strip()
-    df["nivel_norm"] = df.apply(
-        lambda r: nivel_display(r.get("nivel_contacto"), r.get("categoria_final")),
-        axis=1
-    )
 
     def norm_comuna(v):
         if pd.isna(v):
@@ -342,11 +345,14 @@ def compute_contacto_breakdown_weekly(df: pd.DataFrame, global_weeks: list) -> d
     if COL_NIVEL not in df.columns or COL_CAT not in df.columns:
         return empty
 
+    ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
+    RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA",
+                  "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"]
+
     df_c = df[df[COL_NIVEL] == "Se contacta"].copy()
     if df_c.empty:
-        ENT = {"Brinda DNI": [0]*len(global_weeks), "No brinda": [0]*len(global_weeks),
-               "No realiza entrevista": [0]*len(global_weeks)}
-        RES = {g: [0]*len(global_weeks) for g in ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"]}
+        ENT = {g: [0]*len(global_weeks) for g in ENT_GRUPOS}
+        RES = {g: [0]*len(global_weeks) for g in RES_GRUPOS}
         return {"weeks": weeks_str,
                 "auto_entrevista": ENT, "manual_entrevista": dict(ENT),
                 "auto_resultado": RES, "manual_resultado": dict(RES)}
@@ -355,9 +361,6 @@ def compute_contacto_breakdown_weekly(df: pd.DataFrame, global_weeks: list) -> d
     df_c = df_c.copy()
     df_c["_ent"] = [_clasificar_entrevista(cat, dni) for cat, dni in zip(df_c[COL_CAT], dni_col)]
     df_c["_res"] = df_c[COL_CAT].apply(_clasificar_resultado)
-
-    ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"]
 
     result = {"weeks": weeks_str}
 
@@ -1121,7 +1124,7 @@ function renderEntrevistaTable(key) {{
 }}
 
 // ── Tabla resultado ───────────────────────────────────────────────────────────
-const RES_GRUPOS = ["Se deriva", "Casos de salud", "No eran PSC", "Se retira", "Se queda", "Espacio público", "Cierres no identificables"];
+const RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA", "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"];
 const resTblWrap = document.getElementById('resultado-tbl-wrap');
 
 resTblWrap.addEventListener('click', e => {{
