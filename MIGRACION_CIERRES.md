@@ -258,7 +258,7 @@ Nota: el campo `resultado` es la carga raw del Excel (no se modifica en el recom
 | `core/transformations.py` | CATEGORIAS_NUEVAS, NIVEL_POR_CIERRE, BUCKET_POR_CIERRE (rediseno), MAPEO_VIEJO_A_NUEVO, REALIZA_ENTREVISTA_CATS (removidos 09/18), PATRONES_PERSONALIZADOS (15 patrones nuevos), matcher 4-tier |
 | `reporte_semanal_origen.py` | nivel_display con regla PENDIENTE + regla CERRADO sin cierre, preparar_df reorden nivel_norm antes de CATS_EXCLUIR, RES_GRUPOS actualizado a etiquetas PPT |
 | `dashboard_generator.py` | clasificar_contacto con regla CERRADO sin cierre, RES_GRUPOS actualizado |
-| `data_processor.py` | procesar_datos acepta refresh_days=30, ventana rolling: DELETE Neon + trim parquet antes de re-insertar |
+| `data_processor.py` | _build_estado_historico acepta max_fecha (evita contaminacion Tipo_Evolucion en re-procesos); flujo incremental puro sin DELETE ni trim |
 | `migrate_cierres.py` | Script one-time backfill en Neon (ejecutado) |
 | `MIGRACION_CIERRES.md` | Este documento |
 
@@ -314,21 +314,21 @@ Impacto en Sin cubrir:
 
 ### Correcciones aplicadas (2026-05-06)
 
-1. **`_refresh_abril_mayo.py`** (script ad-hoc, no committear): recargo abril desde `abril 2026.xls` local + mayo desde Gmail. La carga incremental es por `Fecha Inicio` — no hay dedup por `Id Suceso` (un suceso puede tener multiples filas legitimas). Parquet final: 369,664 filas.
+1. **`_refresh_abril_mayo.py`** (script ad-hoc, no committear): recargo abril desde `abril 2026.xls` local + mayo desde Gmail. La carga es por `Fecha Inicio` — sin dedup por `Id Suceso` (un suceso puede tener multiples filas legitimas). Parquet final: ~369K filas.
 
-2. **`data_processor.py` ventana refresh 30 dias**: `procesar_datos` acepta `refresh_days=30` (default). Cada run usa `watermark - 30 dias` como filtro efectivo, elimina de Neon esas filas y las re-procesa. Captura correcciones operativas con demora de hasta 30 dias.
+2. **`_fix_tipo_evolucion.py`** (script ad-hoc, no committear): re-clasifica `Tipo_Evolucion` en el parquet completo desde cero con historial vacio, corrigiendo que el refresh habia clasificado DNIs como Recurrentes porque Neon los tenia del run previo.
 
-### Ventana de refresh
+### Flujo incremental (definitivo)
 
-`refresh_days=30` en `data_processor.procesar_datos`. Cada run de `main.py`:
+`main.py` → `procesar_datos(excel_bytes, watermark)`:
 1. Detecta watermark Neon (MAX Fecha Inicio).
-2. `effective_watermark = watermark - 30 dias`.
-3. Filtra Excel: `Fecha Inicio > effective_watermark`.
-4. DELETE FROM historico_limpio WHERE "Fecha Inicio" > effective_watermark.
-5. Re-procesa + re-inserta ventana + nuevos.
-6. Trim parquet backup a `<= effective_watermark` antes de concat.
+2. Filtra Excel: `Fecha Inicio > watermark` (solo filas nuevas).
+3. Append a Neon — sin DELETE previo.
+4. Concat al parquet backup — sin trim previo.
 
-Overhead por run: ~30 dias de sucesos extra en procesamiento y re-insert.
+**No hay ventana rolling ni DELETE**. El Excel de Gmail solo tiene datos recientes — borrar y re-insertar causa perdida de semanas no cubiertas por el Excel.
+
+Correcciones de cierres post-carga (operadores editan Soflex despues del watermark) se capturan via `reconciliar_pendientes`: detecta sucesos PENDIENTE en Neon que ya tienen cierre en el Excel actual y los actualiza.
 
 ### Por que no dedup por Id Suceso
 
@@ -427,3 +427,40 @@ Los 877 `error de soflex` son DERIVACION A RED historica — excluidos por disen
 ### Distribucion temporal de los 13,546 CERRADO sin cierre (parquet completo)
 
 Concentrados en enero-marzo 2026. Abril y mayo tienen 0 registros de este tipo — el refresh desde fuente original cargo los cierres actualizados.
+
+---
+
+## 16. Correccion mapeos Umbral Cero y CNNyA-102 (2026-05-06)
+
+### Problema
+
+Dos mapeos incorrectos en `core/transformations.py`:
+
+1. **`DERIVACION AREA CNNyA-102`** estaba mapeado a `09. Derivacion al equipo de Umbral Cero`. CNNyA (Consejo de Ninos, Ninas y Adolescentes) es derivacion a organismo de seguridad/infancia — debe ir a `14. Derivacion a Seguridad`.
+
+2. **`09. Umbral Cero`** representa operativamente "se realiza entrevista, rechaza recursos y permanece en el lugar" (el equipo de Umbral Cero queda a cargo). Faltaban patrones para capturar este texto libre. Ademas, `09 rechaza entrevista y se queda en el lugar` estaba mapeado a `08` (incorrecto).
+
+### Cambios aplicados
+
+**MAPEO_VIEJO_A_NUEVO**:
+- `derivacion area cnnya 102` / `11 derivacion area cnnya 102` → `14. Derivacion a Seguridad`
+- `09 rechaza entrevista y se queda en el lugar` → `09. Derivacion al equipo de Umbral Cero` (era 08)
+
+**PATRONES_EXACTOS**:
+- `asesoramiento sobre programas rechan entrevista se quedan en el lugar` → `09` (era 08)
+
+**PATRONES_PERSONALIZADOS** — patrones nuevos para Umbral Cero (antes de `rechaz`):
+- `rechaza y se queda` → 09
+- `rechaza entrevista y se queda` → 09
+- `se queda en el lugar` → 09
+- `queda en el lugar` → 09
+- `permanece en el lugar` → 09
+
+**PATRONES_PERSONALIZADOS** — CNNyA variantes → `14. Derivacion a Seguridad`:
+- `derivacion area cnnya`, `cnnya`, `cnnva`, `nnnya`, `nnya 102`
+
+**REALIZA_ENTREVISTA_CATS**: agregado `09. Derivacion al equipo de Umbral Cero` — hay entrevista efectiva, la persona rechaza recursos y permanece en el lugar.
+
+### Impacto
+
+Registros historicos con CNNyA ahora cuentan en "DERIVACION A SEGURIDAD Y A ORDENAMIENTO URBANO" en lugar de "DERIVACION UMBRAL CERO". Registros con texto "se queda/permanece en el lugar" ahora clasifican como 09 en vez de sin_match u 08.

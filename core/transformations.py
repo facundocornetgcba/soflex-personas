@@ -181,6 +181,7 @@ REALIZA_ENTREVISTA_CATS = {
     "05. Traslado efectivo a lugar de origen",
     "06. Acepta CIS pero no hay vacante",
     "07. Se realiza entrevista y se retira del lugar",
+    "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
 }
 
 DERIVADO_CATS = {
@@ -252,12 +253,12 @@ MAPEO_VIEJO_A_NUEVO = {
     "19 sin cubrir":                                       "19. Sin cubrir",
     "20 desestimado":                                      "20. Desestimado",
     "derivacion a red":                                    "error de soflex",
-    "derivacion area cnnya 102":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "11 derivacion area cnnya 102":                        "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "derivacion area cnnya 102":                           "14. Derivación a Seguridad",
+    "11 derivacion area cnnya 102":                        "14. Derivación a Seguridad",
     "positivo":                                            "sin_match",
     # --- Legacy sin mapeo previo → proxy canónico ---
     "06 se realiza entrevista":                            "08. No se realiza entrevista y se retira del lugar",
-    "09 rechaza entrevista y se queda en el lugar":        "08. No se realiza entrevista y se retira del lugar",
+    "09 rechaza entrevista y se queda en el lugar":        "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
     "04 traslado acompanamiento a otros efectores":        "05. Traslado efectivo a lugar de origen",
     "04 traslado efectivo 690":                            "01. Traslado efectivo a CIS",
     "08 imposibilidad de abordaje por consumo":            "08. No se realiza entrevista y se retira del lugar",
@@ -287,7 +288,7 @@ PATRONES_EXACTOS = {
     "10 se contacta pero rechaza pp por desconocimiento voluntad etc 21 asesoramiento sobre programas":    "08. No se realiza entrevista y se retira del lugar",
     "21 asesoramiento sobre programas 9 se contacta pero rechaza entrevista":                              "08. No se realiza entrevista y se retira del lugar",
     "10 se contacta pero rechaza pp por desconocimiento voluntad etc 9 se contacta pero rechaza entrevista": "08. No se realiza entrevista y se retira del lugar",
-    "asesoramiento sobre programas rechan entrevista se quedan en el lugar":                               "08. No se realiza entrevista y se retira del lugar",
+    "asesoramiento sobre programas rechan entrevista se quedan en el lugar":                               "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
 }
 
 # Substring match (Tier 2) — ordered from most specific to least
@@ -324,6 +325,11 @@ PATRONES_PERSONALIZADOS = {
     "se realiza entrevista y se retira": "07. Se realiza entrevista y se retira del lugar",
     "no se realiza entrevista":        "08. No se realiza entrevista y se retira del lugar",
     "rechaza entrevista y se retira":  "08. No se realiza entrevista y se retira del lugar",
+    "rechaza y se queda":              "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "rechaza entrevista y se queda":   "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "se queda en el lugar":            "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "queda en el lugar":               "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "permanece en el lugar":           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
     "rechaza entrevista":              "08. No se realiza entrevista y se retira del lugar",
     "imposibilidad de abordaje":       "08. No se realiza entrevista y se retira del lugar",
     "rechaz":                          "08. No se realiza entrevista y se retira del lugar",
@@ -332,11 +338,11 @@ PATRONES_PERSONALIZADOS = {
     "sin cubrir":                      "19. Sin cubrir",
     "desestimado":                     "20. Desestimado",
     "derivacion a red":                "error de soflex",
-    "derivacion area cnnya":           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "cnnya":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "cnnva":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "nnnya":                           "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "nnya 102":                        "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
+    "derivacion area cnnya":           "14. Derivación a Seguridad",
+    "cnnya":                           "14. Derivación a Seguridad",
+    "cnnva":                           "14. Derivación a Seguridad",
+    "nnnya":                           "14. Derivación a Seguridad",
+    "nnya 102":                        "14. Derivación a Seguridad",
     "seguridad":                       "14. Derivación a Seguridad",
 }
 
