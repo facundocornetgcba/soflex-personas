@@ -568,11 +568,17 @@ def reconciliar_pendientes(df_excel: pd.DataFrame, folder_id: str) -> int:
 
 #  Fase 3: Tipo_Evolucion (incremental)
 
-def _build_estado_historico(engine) -> tuple[dict, set]:
+def _build_estado_historico(engine, max_fecha=None) -> tuple[dict, set]:
     """
     Obtiene el ultimo estado de cada DNI desde Neon usando SQL agregado.
     En lugar de bajar toda la tabla, trae solo 1 fila por DNI (la mas reciente).
     Esto reduce 10x el volumen transferido y elimina el timeout en Neon free tier.
+
+    Args:
+        max_fecha: si se provee, solo considera registros con Fecha Inicio < max_fecha.
+                   Usar df["Fecha Inicio"].min() del batch actual para evitar que
+                   re-procesar datos existentes clasifique DNIs como Recurrentes en vez
+                   de Nuevos (bug: Neon ya tiene esos DNIs del run previo).
 
     Retorna:
         ultima_comuna: dict  dni_str -> float (ultima comuna conocida)
@@ -580,16 +586,22 @@ def _build_estado_historico(engine) -> tuple[dict, set]:
     """
     import time
 
-    print("   📡 Descargando ultimo estado por DNI desde Neon...")
+    if max_fecha is not None:
+        print(f"   Descargando ultimo estado por DNI desde Neon (antes de {pd.Timestamp(max_fecha).date()})...")
+    else:
+        print("   Descargando ultimo estado por DNI desde Neon...")
 
-    # Query agregada: 1 fila por DNI con su ultima comuna.
-    # DISTINCT ON es nativo de Postgres y muy eficiente.
+    # Solo considerar historial ANTERIOR al batch. Evita que re-procesar datos
+    # existentes clasifique DNIs como Recurrentes porque ya estan en Neon.
+    fecha_filter = f'AND "Fecha Inicio" < \'{pd.Timestamp(max_fecha).strftime("%Y-%m-%d")}\'' if max_fecha is not None else ""
+
     q = f"""
         SELECT DISTINCT ON ("DNI_categorizado")
                "DNI_categorizado",
                "comuna_calculada"
         FROM   {TABLE_NEON}
         WHERE  "DNI_categorizado" IS NOT NULL
+               {fecha_filter}
         ORDER  BY "DNI_categorizado", "Fecha Inicio" DESC
     """
 
@@ -950,7 +962,9 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None, refresh_d
     #  Fase 3: Tipo_Evolucion con historial real de Neon
     print("\n🔗 Cargando estado historico desde Neon...")
     engine = get_neon_engine()
-    ultima_comuna, dni_seen = _build_estado_historico(engine)
+    # Solo historial anterior al batch: evita que re-procesar clasifique mal.
+    min_fecha_batch = df["Fecha Inicio"].min() if not df.empty else None
+    ultima_comuna, dni_seen = _build_estado_historico(engine, max_fecha=min_fecha_batch)
     df = clasificar_tipo_evolucion_incremental(df, ultima_comuna, dni_seen)
 
     #  Fase 3b: Apariciones acumuladas por DNI 
@@ -976,20 +990,22 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None, refresh_d
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    # Ventana rolling: eliminar de Neon las filas en la ventana antes de re-insertar.
-    # Garantiza que cierres editados post-carga no queden duplicados ni stale.
+    # Ventana rolling: eliminar de Neon solo las fechas presentes en el batch actual.
+    # Usa df["Fecha Inicio"].min() (rango real del Excel) — no la ventana fija de 30d.
+    # Si el Excel solo tiene una semana, borramos solo esa semana de Neon antes de re-insertar.
     engine_copy = get_neon_engine()
-    if effective_watermark is not None and refresh_days > 0:
+    if effective_watermark is not None and refresh_days > 0 and not df.empty:
+        min_fecha_batch = df["Fecha Inicio"].min()
         try:
             from sqlalchemy import text as _sa_text
             with engine_copy.begin() as _conn:
                 result = _conn.execute(
                     _sa_text(
-                        f'DELETE FROM {TABLE_NEON} WHERE "Fecha Inicio" > :fecha'
+                        f'DELETE FROM {TABLE_NEON} WHERE "Fecha Inicio" >= :fecha'
                     ),
-                    {"fecha": effective_watermark},
+                    {"fecha": min_fecha_batch},
                 )
-                print(f"   [REFRESH] Eliminadas {result.rowcount:,} filas de Neon en ventana {refresh_days}d para re-insercion.")
+                print(f"   [REFRESH] Eliminadas {result.rowcount:,} filas de Neon (desde {min_fecha_batch.date()}) para re-insercion.")
         except Exception as _exc:
             print(f"   [WARN] No se pudo limpiar ventana en Neon: {_exc}. Re-insertando igual.")
 
@@ -1035,12 +1051,13 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None, refresh_d
         if df_prev is not None and not df_prev.empty:
             df_prev["Fecha Inicio"] = pd.to_datetime(df_prev["Fecha Inicio"], errors="coerce")
 
-            # Ventana rolling: eliminar del parquet las filas en la ventana de refresh
-            # para que el concat no genere duplicados (mismas filas re-insertadas).
-            if effective_watermark is not None and refresh_days > 0:
+            # Ventana rolling: eliminar del parquet solo las fechas presentes en el batch.
+            # Evita duplicados sin perder datos que el Excel no cubre.
+            if effective_watermark is not None and refresh_days > 0 and not df.empty:
+                min_fecha_batch = df["Fecha Inicio"].min()
                 rows_antes = len(df_prev)
-                df_prev = df_prev[df_prev["Fecha Inicio"] <= effective_watermark].copy()
-                print(f"   [REFRESH] Parquet trimmeado: {rows_antes:,} -> {len(df_prev):,} filas (ventana {refresh_days}d removida).")
+                df_prev = df_prev[df_prev["Fecha Inicio"] < min_fecha_batch].copy()
+                print(f"   [REFRESH] Parquet trimmeado: {rows_antes:,} -> {len(df_prev):,} filas (removidas desde {min_fecha_batch.date()}).")
 
             if "id suceso" in df_prev.columns:
                 df_prev["id suceso"] = df_prev["id suceso"].astype("string")
