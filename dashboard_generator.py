@@ -34,6 +34,7 @@ _DNI_INVALIDOS_STR = {
 
 def clasificar_contacto(row):
     """Clasificación estricta de contactos usando nivel_contacto del ETL."""
+    import pandas as pd
     if row.get('estado') == 'PENDIENTE':
         c_val = row.get('comuna_calculada')
         es_priorizada = False
@@ -43,6 +44,13 @@ def clasificar_contacto(row):
         except Exception:
             pass
         if not es_priorizada:
+            return 'Sin cubrir'
+
+    # CERRADO sin ningun cierre cargado → sin cubrir
+    if row.get('estado') == 'CERRADO':
+        cat = str(row.get('categoria_final', '')).strip()
+        cierre = row.get('cierre_texto')
+        if cat in ('sin_match', '') and pd.isna(cierre):
             return 'Sin cubrir'
 
     nivel = str(row.get('nivel_contacto', '')).strip()

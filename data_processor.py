@@ -835,23 +835,27 @@ def clasificar_tipo_evolucion_incremental(
 
 #  Pipeline principal 
 
-def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.DataFrame | None:
+def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None, refresh_days: int = 30) -> pd.DataFrame | None:
     """
     Procesa el Excel semanal de forma incremental.
 
     Args:
-        excel_bytes: bytes del archivo Excel descargado de Drive
-        folder_id:   ID de carpeta Drive donde vive el parquet de backup
-        watermark:   datetime con la fecha mxima en Neon (None = primera carga)
+        excel_bytes:  bytes del archivo Excel descargado de Drive
+        folder_id:    ID de carpeta Drive donde vive el parquet de backup
+        watermark:    datetime con la fecha maxima en Neon (None = primera carga)
+        refresh_days: re-procesar los ultimos N dias para capturar cierres actualizados
+                      post-carga (operadores editan en Soflex despues del watermark).
+                      Default 30. Se ignora si watermark es None.
 
     Returns:
-        DataFrame con los registros procesados, o None si no haba datos nuevos.
+        DataFrame con los registros procesados, o None si no habia datos nuevos.
     """
+    import datetime as _dt
     print("=" * 60)
     print("  ETL INCREMENTAL - data_processor")
     print("=" * 60)
 
-    #  Fase 0: Leer y filtrar Excel 
+    #  Fase 0: Leer y filtrar Excel
     print("\n Leyendo Excel...")
     try:
         df = pd.read_excel(io.BytesIO(excel_bytes), skiprows=1)
@@ -872,11 +876,18 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
     # Guardar Excel completo ANTES del filtro de watermark para la reconciliacion
     df_full = df.copy()
 
+    # Ventana de refresh: re-procesar los ultimos N dias para capturar cierres editados
+    effective_watermark = None
     if watermark:
-        print(f"📅 Watermark: {watermark} - filtrando solo registros posteriores...")
-        df = df[df["Fecha Inicio"] > watermark].copy()
+        if refresh_days > 0:
+            effective_watermark = pd.Timestamp(watermark) - _dt.timedelta(days=refresh_days)
+            print(f"Watermark: {watermark} | Ventana refresh: {refresh_days} dias -> filtrando Fecha Inicio > {effective_watermark.date()}")
+        else:
+            effective_watermark = pd.Timestamp(watermark)
+            print(f"Watermark: {watermark} - filtrando solo registros posteriores...")
+        df = df[df["Fecha Inicio"] > effective_watermark].copy()
     else:
-        print("📅 Sin watermark - procesando todo el archivo (primera carga).")
+        print("Sin watermark - procesando todo el archivo (primera carga).")
 
     # Reconciliar pendientes siempre (incluso si no hay registros nuevos)
     reconciliar_pendientes(df_full, folder_id)
@@ -946,7 +957,7 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
     print("\n📊 Calculando apariciones...")
     df = _calcular_apariciones_incremental(df)
 
-    #  Fase 4: Append a Neon 
+    #  Fase 4: Append a Neon
     print(f"\n💾 Append a Neon ({TABLE_NEON})...")
     # Normalizar nombres de columnas de fecha recurso al snake_case canónico
     # antes de parsear. El Excel las trae con espacios y mayúsculas mixtas.
@@ -965,7 +976,23 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
+    # Ventana rolling: eliminar de Neon las filas en la ventana antes de re-insertar.
+    # Garantiza que cierres editados post-carga no queden duplicados ni stale.
     engine_copy = get_neon_engine()
+    if effective_watermark is not None and refresh_days > 0:
+        try:
+            from sqlalchemy import text as _sa_text
+            with engine_copy.begin() as _conn:
+                result = _conn.execute(
+                    _sa_text(
+                        f'DELETE FROM {TABLE_NEON} WHERE "Fecha Inicio" > :fecha'
+                    ),
+                    {"fecha": effective_watermark},
+                )
+                print(f"   [REFRESH] Eliminadas {result.rowcount:,} filas de Neon en ventana {refresh_days}d para re-insercion.")
+        except Exception as _exc:
+            print(f"   [WARN] No se pudo limpiar ventana en Neon: {_exc}. Re-insertando igual.")
+
     append_neon_copy(engine_copy, df, TABLE_NEON)
     engine_copy.dispose()
     engine.dispose()
@@ -1007,6 +1034,14 @@ def procesar_datos(excel_bytes: bytes, folder_id: str, watermark=None) -> pd.Dat
 
         if df_prev is not None and not df_prev.empty:
             df_prev["Fecha Inicio"] = pd.to_datetime(df_prev["Fecha Inicio"], errors="coerce")
+
+            # Ventana rolling: eliminar del parquet las filas en la ventana de refresh
+            # para que el concat no genere duplicados (mismas filas re-insertadas).
+            if effective_watermark is not None and refresh_days > 0:
+                rows_antes = len(df_prev)
+                df_prev = df_prev[df_prev["Fecha Inicio"] <= effective_watermark].copy()
+                print(f"   [REFRESH] Parquet trimmeado: {rows_antes:,} -> {len(df_prev):,} filas (ventana {refresh_days}d removida).")
+
             if "id suceso" in df_prev.columns:
                 df_prev["id suceso"] = df_prev["id suceso"].astype("string")
             if "id suceso" in df.columns:

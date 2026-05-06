@@ -133,7 +133,7 @@ def mapear_grupo_manual(valor) -> str:
 
 COMUNAS_PRIORIZADAS = {2.0, 13.0, 14.0, 1.5}
 
-def nivel_display(nivel_contacto_val, categoria_final_val, estado_val=None, comuna_val=None) -> str:
+def nivel_display(nivel_contacto_val, categoria_final_val, estado_val=None, comuna_val=None, cierre_texto_val=None) -> str:
     estado = str(estado_val).strip().upper() if estado_val is not None and not pd.isna(estado_val) else ""
     if estado == "PENDIENTE":
         try:
@@ -141,8 +141,8 @@ def nivel_display(nivel_contacto_val, categoria_final_val, estado_val=None, comu
                 return "Sin cubrir"
         except Exception:
             return "Sin cubrir"
-    # CERRADO sin cierre registrado → sin cubrir (intervencion sin resultado)
-    if estado == "CERRADO":
+    # CERRADO sin ningun cierre cargado → sin cubrir (intervencion sin resultado)
+    if estado == "CERRADO" and pd.isna(cierre_texto_val):
         cat_str = str(categoria_final_val).strip() if not pd.isna(categoria_final_val) else ""
         if cat_str in ("sin_match", ""):
             return "Sin cubrir"
@@ -214,6 +214,7 @@ def preparar_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         lambda r: nivel_display(
             r.get("nivel_contacto"), r.get("categoria_final"),
             r.get("Estado"), r.get("comuna_calculada"),
+            r.get("cierre_texto"),
         ),
         axis=1
     )

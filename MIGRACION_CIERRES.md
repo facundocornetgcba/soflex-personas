@@ -88,20 +88,21 @@ Recompute aplicado sobre parquet 2026-05-06. Los 50,708 registros afectados fuer
 
 Definidos en `BUCKET_POR_CIERRE` en `core/transformations.py`. Todos los archivos de reporte y dashboard leen este dict — unica fuente de verdad.
 
+**Rediseno 2026-05-06**: buckets colapsados y renombrados para alinear con presentacion PPT.
+
 | Bucket | Cierres incluidos |
 |---|---|
-| `SE DERIVA` | 01, 02, 03, 05, 09, 14, DERIVACION AREA CNNyA-102 |
-| `CASOS DE SALUD MENTAL` | 12, 13 |
-| `SE RETIRA` | 07, 08 |
-| `ESPACIO PUBLICO` | 15 |
-| `MENDICIDAD` | 18 |
-| `ACEPTA CIS SIN VACANTE` | 06 |
+| `DERIVACION A DISPOSITIVO RED` | 01, 02, 03, 05 |
+| `SE RETIRA VOLUNTARIAMENTE` | 06, 07, 08 |
+| `DERIVACION UMBRAL CERO` | 09 |
+| `DERIVACION A SAME` | 12, 13 |
+| `DERIVACION A SEGURIDAD Y A ORDENAMIENTO URBANO` | 14, 15 |
 | `NO SE CONTACTA` | 16, 17 |
+| `NO ERAN PSC` | 18 |
 | `SIN CUBRIR` | 19 |
 | `DESESTIMADO` | 20 |
-| `POSITIVO` | POSITIVO (excluido del reporte semanal) |
-| `DERIVACION A RED` | DERIVACION A RED (excluido del reporte semanal) |
-| `Cierres no identificables` | NULL / sin_match |
+
+Cierres excluidos del reporte (no aparecen en graficos): `error de soflex` (DERIVACION A RED historica), `POSITIVO`, `sin_match` sin nivel Sin cubrir.
 
 ---
 
@@ -215,16 +216,16 @@ Algunos registros tienen `Cierre Supervisor` = "Suceso [S108:XXXXXXX] asociado a
 
 ---
 
-## 9. Estado Neon vs Parquet (2026-05-06)
+## 9. Estado Neon vs Parquet (2026-05-06, post-refresh)
 
 | Fuente | Filas | Rango |
 |---|---|---|
-| Parquet Drive (`2025_historico_limpio.parquet`) | 466,420 | 2025-01-01 → 2026-05-05 |
-| Neon (`historico_limpio`) | 4,218 | 2026-05-01 → 2026-05-05 |
+| Parquet Drive (`2025_historico_limpio.parquet`) | 369,664 | 2025-01-01 → 2026-05-05 |
+| Neon (`historico_limpio`) | pendiente sync | pendiente |
 
-**Neon solo tiene datos de mayo 2026** porque el proyecto Neon fue recreado vacio y `main.py` cargo solo el ultimo Excel disponible. El parquet es la fuente de verdad para reportes historicos.
+El parquet fue recargado desde fuentes originales (ver seccion 13). Neon requiere sync completo via `_sync_neon.py` (TRUNCATE + COPY). Pendiente resolucion de credenciales Neon (error de password al 2026-05-06).
 
-Para cargar el historico completo a Neon: ejecutar `_load_parquet_to_neon.py` (psycopg2 directo, preserva nombres de columna originales) antes de correr `main.py`. Despues `main.py` corre incremental sobre el watermark del parquet completo.
+El parquet es la fuente de verdad para reportes historicos. Los reportes (`reporte_semanal_origen.py`, `dashboard_generator.py`) leen directo del parquet — no dependen de Neon.
 
 ---
 
@@ -254,12 +255,14 @@ Nota: el campo `resultado` es la carga raw del Excel (no se modifica en el recom
 
 | Archivo | Cambios |
 |---|---|
-| `core/transformations.py` | CATEGORIAS_NUEVAS, NIVEL_POR_CIERRE, BUCKET_POR_CIERRE, MAPEO_VIEJO_A_NUEVO, REALIZA_ENTREVISTA_CATS, matcher 4-tier |
-| `reporte_semanal_origen.py` | nivel_display con regla PENDIENTE, preparar_df reorden nivel_norm antes de CATS_EXCLUIR, _clasificar_resultado delega a BUCKET_POR_CIERRE, RES_GRUPOS actualizado a etiquetas PPT |
-| `dashboard_generator.py` | _clasificar_resultado delega a BUCKET_POR_CIERRE, RES_GRUPOS actualizado |
+| `core/transformations.py` | CATEGORIAS_NUEVAS, NIVEL_POR_CIERRE, BUCKET_POR_CIERRE (rediseno), MAPEO_VIEJO_A_NUEVO, REALIZA_ENTREVISTA_CATS (removidos 09/18), PATRONES_PERSONALIZADOS (15 patrones nuevos), matcher 4-tier |
+| `reporte_semanal_origen.py` | nivel_display con regla PENDIENTE + regla CERRADO sin cierre, preparar_df reorden nivel_norm antes de CATS_EXCLUIR, RES_GRUPOS actualizado a etiquetas PPT |
+| `dashboard_generator.py` | clasificar_contacto con regla CERRADO sin cierre, RES_GRUPOS actualizado |
+| `data_processor.py` | procesar_datos acepta refresh_days=30, ventana rolling: DELETE Neon + trim parquet antes de re-insertar |
 | `migrate_cierres.py` | Script one-time backfill en Neon (ejecutado) |
+| `MIGRACION_CIERRES.md` | Este documento |
 
-Sin cambios: `main.py`, `data_processor.py`, `core/db_connections.py`, `assets/comunas/`.
+Sin cambios: `main.py`, `core/db_connections.py`, `core/drive_manager.py`, `core/transformations.py` (estructura), `assets/comunas/`.
 
 ---
 
@@ -311,19 +314,25 @@ Impacto en Sin cubrir:
 
 ### Correcciones aplicadas (2026-05-06)
 
-1. **`_refresh_abril_mayo.py`** (script ad-hoc, no committear): recargo abril desde `abril 2026.xls` local + mayo desde Gmail. Dedup global por Id Suceso. Parquet final: 366,140 filas sin duplicados.
+1. **`_refresh_abril_mayo.py`** (script ad-hoc, no committear): recargo abril desde `abril 2026.xls` local + mayo desde Gmail. La carga incremental es por `Fecha Inicio` — no hay dedup por `Id Suceso` (un suceso puede tener multiples filas legitimas). Parquet final: 369,664 filas.
 
-2. **`main.py` ventana refresh 30 dias**: cada run elimina de Neon los ultimos 30 dias y los re-procesa desde el Excel. Captura correcciones operativas con demora de hasta 30 dias.
+2. **`data_processor.py` ventana refresh 30 dias**: `procesar_datos` acepta `refresh_days=30` (default). Cada run usa `watermark - 30 dias` como filtro efectivo, elimina de Neon esas filas y las re-procesa. Captura correcciones operativas con demora de hasta 30 dias.
 
 ### Ventana de refresh
 
-`REFRESH_DAYS = 30` en `main.py`. Cada run de `main.py`:
-1. Detecta watermark Neon.
-2. Calcula `refresh_from = watermark - 30 dias`.
-3. DELETE FROM historico_limpio WHERE "Fecha Inicio" >= refresh_from.
-4. Re-procesa registros desde `refresh_from` (incluye ventana + nuevos).
+`refresh_days=30` en `data_processor.procesar_datos`. Cada run de `main.py`:
+1. Detecta watermark Neon (MAX Fecha Inicio).
+2. `effective_watermark = watermark - 30 dias`.
+3. Filtra Excel: `Fecha Inicio > effective_watermark`.
+4. DELETE FROM historico_limpio WHERE "Fecha Inicio" > effective_watermark.
+5. Re-procesa + re-inserta ventana + nuevos.
+6. Trim parquet backup a `<= effective_watermark` antes de concat.
 
 Overhead por run: ~30 dias de sucesos extra en procesamiento y re-insert.
+
+### Por que no dedup por Id Suceso
+
+`Id Suceso` no es PK unica — un mismo suceso puede tener multiples filas (re-visitas, actualizaciones). La carga incremental se gestiona solo por `Fecha Inicio` (watermark). Dedup por `Id Suceso` causaba perdida de registros legitimos y subestimacion de totales.
 
 ---
 
@@ -391,12 +400,30 @@ Desglose del gap:
 | `sin_match` con nivel_norm = "Seguimiento" — cierre_texto no mapeable | 328 |
 | **Total excluido** | **5,370** |
 
-### Raiz del problema
+### Solucion aplicada (2026-05-06)
 
-Los 4,165 registros "CERRADO sin cierre_texto" son sucesos cerrados en Soflex sin que el operador cargara un cierre. El pipeline asigna `categoria_final = sin_match` y `nivel_contacto = Sin dato`. `nivel_display()` retorna "Seguimiento" para cualquier registro con `nivel_contacto = Sin dato` y `Estado != PENDIENTE`. El filtro de `preparar_df` excluye todo `sin_match` donde `nivel_norm != "Sin cubrir"`.
+Los 4,165 registros CERRADO+sin_match+cierre_texto=None se reclasifican como **Sin cubrir**. Razon: un suceso cerrado sin ningun cierre cargado equivale operativamente a no haber podido dar respuesta.
 
-### Estado actual
+**`nivel_display()` en `reporte_semanal_origen.py`** — nueva regla:
+```python
+if estado == "CERRADO" and pd.isna(cierre_texto_val):
+    if cat_str in ("sin_match", ""):
+        return "Sin cubrir"
+```
 
-No se modifico la logica de exclusion. Incluir estos registros requiere una decision operativa: como se cuenta un suceso cerrado sin cierre explcito (Se contacta, Sin cubrir, o categoria propia). Pendiente definicion con el area.
+**`clasificar_contacto()` en `dashboard_generator.py`** — idem:
+```python
+if row.get('estado') == 'CERRADO':
+    cat = str(row.get('categoria_final', '')).strip()
+    cierre = row.get('cierre_texto')
+    if cat in ('sin_match', '') and pd.isna(cierre):
+        return 'Sin cubrir'
+```
+
+Condicion `pd.isna(cierre_texto_val)` es critica — evita que registros con `cierre_texto = "POSITIVO"` (sin_match intencional) se cuenten como Sin cubrir.
 
 Los 877 `error de soflex` son DERIVACION A RED historica — excluidos por diseno, no se cambia.
+
+### Distribucion temporal de los 13,546 CERRADO sin cierre (parquet completo)
+
+Concentrados en enero-marzo 2026. Abril y mayo tienen 0 registros de este tipo — el refresh desde fuente original cargo los cierres actualizados.
