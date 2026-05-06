@@ -281,3 +281,46 @@ python main.py
 ```
 
 Requiere Neon con espacio disponible. Si Neon esta lleno, el pipeline falla en el append pero los reportes siguen funcionando contra el parquet.
+
+---
+
+## 13. Bug: parquet stale por correcciones operativas + duplicados (detectado 2026-05-06)
+
+### Problema
+
+Cruce `abril 2026.xls` vs parquet por `Id Suceso` revelo dos bugs:
+
+**A — Duplicados**: parquet tenia 466,420 filas / 366,140 ids unicos (~100K duplicados). `main.py` append-only re-procesaba Excels solapados sin dedupe.
+
+**B — Cierres stale**: De 6,829 filas con `Resultado=15-Sin cubrir` en Excel abril:
+- 3,656 OK en parquet (correcto)
+- 3,162 con `resultado=None` en parquet
+- 1,722 con `resultado=DERIVACION A RED` en parquet
+
+Causa: operadores corrigen cierres en Soflex post-load (ej: DERIVACION A RED → 15-Sin cubrir). El watermark de `main.py` impedia re-leer esas filas.
+
+Impacto en Sin cubrir:
+
+| Semana | Antes (parquet stale) | Despues (fix) | Excel raw |
+|---|---|---|---|
+| 2026-03-30 | 114 | 1,195 | 1,137 |
+| 2026-04-06 | 498 | 1,866 | 1,928 |
+| 2026-04-13 | 1,509 | 1,726 | 1,779 |
+| 2026-04-20 | 1,609 | 1,773 | 1,828 |
+| 2026-04-27 | 494 | 982 | ~677+ |
+
+### Correcciones aplicadas (2026-05-06)
+
+1. **`_refresh_abril_mayo.py`** (script ad-hoc, no committear): recargo abril desde `abril 2026.xls` local + mayo desde Gmail. Dedup global por Id Suceso. Parquet final: 366,140 filas sin duplicados.
+
+2. **`main.py` ventana refresh 30 dias**: cada run elimina de Neon los ultimos 30 dias y los re-procesa desde el Excel. Captura correcciones operativas con demora de hasta 30 dias.
+
+### Ventana de refresh
+
+`REFRESH_DAYS = 30` en `main.py`. Cada run de `main.py`:
+1. Detecta watermark Neon.
+2. Calcula `refresh_from = watermark - 30 dias`.
+3. DELETE FROM historico_limpio WHERE "Fecha Inicio" >= refresh_from.
+4. Re-procesa registros desde `refresh_from` (incluye ventana + nuevos).
+
+Overhead por run: ~30 dias de sucesos extra en procesamiento y re-insert.

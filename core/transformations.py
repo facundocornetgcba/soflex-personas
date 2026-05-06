@@ -260,8 +260,11 @@ MAPEO_VIEJO_A_NUEVO = {
     # --- Legacy sin mapeo previo → proxy canónico ---
     "06 se realiza entrevista":                            "08. No se realiza entrevista y se retira del lugar",
     "09 rechaza entrevista y se queda en el lugar":        "08. No se realiza entrevista y se retira del lugar",
-    "04 traslado acompanamiento a otros efectores":        "01. Traslado efectivo a CIS",
+    "04 traslado acompanamiento a otros efectores":        "05. Traslado efectivo a lugar de origen",
     "04 traslado efectivo 690":                            "01. Traslado efectivo a CIS",
+    "08 imposibilidad de abordaje por consumo":            "08. No se realiza entrevista y se retira del lugar",
+    "14 no se encuentra en situacion de calle":            "17. No se observan personas ni pertenencias",
+    "negativo":                                            "20. Desestimado",
     "derivacion a ep":                                     "15. Derivación a Ordenamiento Urbano",
 }
 

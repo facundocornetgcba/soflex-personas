@@ -10,6 +10,8 @@ Flujo:
   4. Append a Neon + actualiza parquet backup en Drive
 """
 
+from datetime import timedelta
+
 from core.db_connections import get_max_date_from_neon, get_table_stats, get_neon_engine
 from core.drive_manager   import (
     download_file_as_bytes, get_drive_service,
@@ -17,6 +19,8 @@ from core.drive_manager   import (
 )
 from core.gmail_manager   import get_latest_excel_from_gmail
 from data_processor        import procesar_datos
+
+REFRESH_DAYS = 30  # re-procesar ultimos N dias para capturar correcciones operativas
 
 import sys
 if sys.stdout.encoding != 'utf-8':
@@ -117,14 +121,31 @@ def main():
         print(f"   ❌ Error: {exc}")
         raise
 
-    # 4. Watermark desde Neon
+    # 4. Watermark desde Neon con ventana de refresh
     print(f"\n🔍 Watermark en Neon ({TABLE_NEON})...")
-    watermark = get_max_date_from_neon(TABLE_NEON, COL_FECHA)
+    watermark_raw = get_max_date_from_neon(TABLE_NEON, COL_FECHA)
 
-    if watermark:
-        print(f"   ✅ {watermark}  ->  solo registros posteriores a esta fecha")
+    if watermark_raw:
+        refresh_from = watermark_raw - timedelta(days=REFRESH_DAYS)
+        print(f"   ✅ Neon max: {watermark_raw} | Refresh ventana: {refresh_from} (ultimos {REFRESH_DAYS} dias)")
+        # Borrar ventana de refresh de Neon para re-insertarla con cierres actualizados
+        try:
+            from sqlalchemy import text as sa_text
+            engine_del = get_neon_engine()
+            with engine_del.begin() as conn:
+                res = conn.execute(
+                    sa_text(f'DELETE FROM {TABLE_NEON} WHERE "{COL_FECHA}" >= :fecha'),
+                    {"fecha": refresh_from}
+                )
+                print(f"   🔄 Eliminados {res.rowcount:,} registros de la ventana refresh para re-procesarlos")
+            engine_del.dispose()
+        except Exception as exc:
+            print(f"   ⚠️  No se pudo borrar ventana refresh: {exc}. Continuando con watermark original.")
+            refresh_from = watermark_raw
+        watermark = refresh_from - timedelta(seconds=1)
     else:
         print("   ⚠️  Tabla vaca -> se procesa todo (primera carga)")
+        watermark = None
 
     # Info actual de Neon (informativo, no bloquea el ETL)
     try:
