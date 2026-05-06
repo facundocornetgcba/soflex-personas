@@ -141,6 +141,11 @@ def nivel_display(nivel_contacto_val, categoria_final_val, estado_val=None, comu
                 return "Sin cubrir"
         except Exception:
             return "Sin cubrir"
+    # CERRADO sin cierre registrado → sin cubrir (intervencion sin resultado)
+    if estado == "CERRADO":
+        cat_str = str(categoria_final_val).strip() if not pd.isna(categoria_final_val) else ""
+        if cat_str in ("sin_match", ""):
+            return "Sin cubrir"
     niv = str(nivel_contacto_val).strip() if not pd.isna(nivel_contacto_val) else ""
     if niv in ("Se contacta", "No se contacta", "Sin cubrir", "Desestimado"):
         return niv
@@ -346,8 +351,14 @@ def compute_contacto_breakdown_weekly(df: pd.DataFrame, global_weeks: list) -> d
         return empty
 
     ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA",
-                  "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"]
+    RES_GRUPOS = [
+        "DERIVACIÓN A DISPOSITIVO RED",
+        "DERIVACION A SAME",
+        "SE RETIRA VOLUNTARIAMENTE",
+        "DERIVACIÓN A SEGURIDAD Y A ORDENAMIENTO URBANO",
+        "DERIVACION UMBRAL CERO",
+        "NO ERAN PSC",
+    ]
 
     df_c = df[df[COL_NIVEL] == "Se contacta"].copy()
     if df_c.empty:
@@ -1124,7 +1135,7 @@ function renderEntrevistaTable(key) {{
 }}
 
 // ── Tabla resultado ───────────────────────────────────────────────────────────
-const RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA", "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"];
+const RES_GRUPOS = ["DERIVACIÓN A DISPOSITIVO RED", "DERIVACION A SAME", "SE RETIRA VOLUNTARIAMENTE", "DERIVACIÓN A SEGURIDAD Y A ORDENAMIENTO URBANO", "DERIVACION UMBRAL CERO", "NO ERAN PSC"];
 const resTblWrap = document.getElementById('resultado-tbl-wrap');
 
 resTblWrap.addEventListener('click', e => {{

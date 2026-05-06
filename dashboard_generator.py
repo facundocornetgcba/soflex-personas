@@ -174,8 +174,14 @@ def compute_contacto_breakdown_weekly(df_base, n_semanas=8):
     df_c['_res_grupo'] = df_c[COL_CAT].apply(_clasificar_resultado)
 
     ENT_GRUPOS = ["Brinda DNI", "No brinda", "No realiza entrevista"]
-    RES_GRUPOS = ["SE DERIVA", "CASOS DE SALUD MENTAL", "SE RETIRA",
-                  "ESPACIO PUBLICO", "ACEPTA CIS SIN VACANTE", "MENDICIDAD"]
+    RES_GRUPOS = [
+        "DERIVACIÓN A DISPOSITIVO RED",
+        "DERIVACION A SAME",
+        "SE RETIRA VOLUNTARIAMENTE",
+        "DERIVACIÓN A SEGURIDAD Y A ORDENAMIENTO URBANO",
+        "DERIVACION UMBRAL CERO",
+        "NO ERAN PSC",
+    ]
 
     result = {'weeks': weeks_str}
 
