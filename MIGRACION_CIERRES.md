@@ -143,13 +143,13 @@ Definido en `core/transformations.py`. Solo cierres donde se hace interaccion di
 05. Traslado efectivo a lugar de origen
 06. Acepta CIS pero no hay vacante
 07. Se realiza entrevista y se retira del lugar
-09. Derivacion al equipo de Umbral Cero de Primer Abordaje
-18. Mendicidad
 ```
 
-Excluidos: 12/13 (emergencia medica SAME — no hay intercambio de datos), 14 (Seguridad), 15 (Ordenamiento Urbano), DERIVACION AREA CNNyA-102, POSITIVO, 08 (no se realiza entrevista).
+Excluidos: 08 (no se realiza entrevista), 09 (derivacion — no hay entrevista BAP directa), 12/13 (emergencia medica SAME), 14 (Seguridad), 15 (Ordenamiento Urbano), 18 (Mendicidad — no es persona en calle en sentido BAP), DERIVACION AREA CNNyA-102, POSITIVO.
 
-Impacto en reporte: el cuadro DNI divide al universo "Se contacta" en Brinda DNI / No brinda / No realiza entrevista. Con el set acotado, derivaciones y emergencias caen en "No realiza entrevista" en lugar de inflar "No brinda".
+**Cambio 2026-05-06**: removidos 09 (Umbral Cero) y 18 (Mendicidad) del set. Razon: Umbral Cero es derivacion sin entrevista BAP directa; Mendicidad no aplica el criterio de entrevista BAP. El conteo de "Realiza entrevista" estaba inflado por estos dos cierres de alto volumen.
+
+Impacto en reporte: el cuadro DNI divide al universo "Se contacta" en Brinda DNI / No brinda / No realiza entrevista. Con el set acotado, derivaciones y casos de mendicidad caen en "No realiza entrevista".
 
 ---
 
@@ -324,3 +324,79 @@ Impacto en Sin cubrir:
 4. Re-procesa registros desde `refresh_from` (incluye ventana + nuevos).
 
 Overhead por run: ~30 dias de sucesos extra en procesamiento y re-insert.
+
+---
+
+## 14. Fix patrones free-text en PATRONES_PERSONALIZADOS (2026-05-06)
+
+### Problema
+
+15,171 registros en parquet con `categoria_final = sin_match` y `cierre_texto` no nulo (post-migracion). El matcher no los capturaba porque son texto libre escrito por operadores (no codigos estructurados).
+
+### Patrones agregados a `PATRONES_PERSONALIZADOS`
+
+| Patron (substring) | Categoria | Ejemplos de cierre_texto |
+|---|---|---|
+| `dipa combate` | 02. Traslado DIPA | "DIPA Combate - Htal. Borda - DIPA Combate" |
+| `ingreso micro` | 03. Traslado Micro | "ingreso micro comuna 2" |
+| `traslados micro` | 03. Traslado Micro | "traslados micro cmna 14" |
+| `micro solidario` | 03. Traslado Micro | "MICRO SOLIDARIO C14" |
+| `se lo traslada a micro` | 03. Traslado Micro | "se lo traslada a micro en recoleta" |
+| `se los traslada a micro` | 03. Traslado Micro | — |
+| `no se contacta y no se` | 17. No se observan personas ni pertenencias | Variantes con typo: "obaservan", "pertencias", "pertenecias" |
+| `informa no se contacta` | 17. No se observan personas ni pertenencias | "911 informa no se contacta personas" |
+| `no se contacta y se ob` | 16. No se observan personas y hay pertenencias | "no se contacta y se observan pertenencias" |
+| `eximicion` | 07. Se realiza entrevista y se retira | "se le realiza eximicion de pago para dni" |
+| `asesoramiento` | 07. Se realiza entrevista y se retira | "asesoramiento sobre programas", "asesoramiento CP" |
+| `se retira del lugar` | 07. Se realiza entrevista y se retira | "se retira del lugar por sus propios medios" |
+| `se retiran del lugar` | 07. Se realiza entrevista y se retira | — |
+| `se retira` | 07. Se realiza entrevista y se retira | "911 informa que la persona se retira", "108 informa el masculino se retira" |
+| `rechaz` | 08. No se realiza entrevista y se retira | "rechaza recursos", "rechazan asistencia", "son rechazados", "rechaza CIS/DIPA", "rechaza vacante", "rechaza parador" |
+
+Orden importante: patrones mas especificos primero (ej: `no se contacta y no se` antes de `se retira`).
+
+### Resultado
+
+| Estado | Cantidad |
+|---|---|
+| Candidatos (sin_match con cierre_texto no POSITIVO) | 15,171 |
+| Re-categorizados en parquet | 1,092 (7.2%) |
+| Distribucion nueva cat | 08: 540, 07: 392, 17: 97, 03: 25, 02: 20, 16: 18 |
+| Aun sin_match | 14,079 (texto libre largo o ruido — no mapeables por substring) |
+
+Script aplicado: `_recategorizar_sinmatch.py` (ad-hoc, no committear).
+
+---
+
+## 15. Gap de total en reportes por comuna — CERRADO sin cierre (2026-05-06)
+
+### Contexto
+
+Operadores de Comuna 2 reportaron que el total del reporte es menor al esperado.
+
+### Analisis
+
+| Universo | Filas |
+|---|---|
+| Com2 total parquet (id_suceso_asoc=0, todos los years) | 40,015 |
+| Com2 visibles en reporte (post-filtros) | 34,645 |
+| **Gap total** | **5,370 (13.4%)** |
+
+Desglose del gap:
+
+| Razon exclusion | Filas |
+|---|---|
+| `error de soflex` (DERIVACION A RED historica) | 877 |
+| `sin_match` con nivel_norm = "Seguimiento" — sin cierre_texto | 4,165 |
+| `sin_match` con nivel_norm = "Seguimiento" — cierre_texto no mapeable | 328 |
+| **Total excluido** | **5,370** |
+
+### Raiz del problema
+
+Los 4,165 registros "CERRADO sin cierre_texto" son sucesos cerrados en Soflex sin que el operador cargara un cierre. El pipeline asigna `categoria_final = sin_match` y `nivel_contacto = Sin dato`. `nivel_display()` retorna "Seguimiento" para cualquier registro con `nivel_contacto = Sin dato` y `Estado != PENDIENTE`. El filtro de `preparar_df` excluye todo `sin_match` donde `nivel_norm != "Sin cubrir"`.
+
+### Estado actual
+
+No se modifico la logica de exclusion. Incluir estos registros requiere una decision operativa: como se cuenta un suceso cerrado sin cierre explcito (Se contacta, Sin cubrir, o categoria propia). Pendiente definicion con el area.
+
+Los 877 `error de soflex` son DERIVACION A RED historica — excluidos por diseno, no se cambia.
