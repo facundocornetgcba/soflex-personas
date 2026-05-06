@@ -181,8 +181,6 @@ REALIZA_ENTREVISTA_CATS = {
     "05. Traslado efectivo a lugar de origen",
     "06. Acepta CIS pero no hay vacante",
     "07. Se realiza entrevista y se retira del lugar",
-    "09. Derivación al equipo de Umbral Cero de Primer Abordaje",
-    "18. Mendicidad",
 }
 
 DERIVADO_CATS = {
